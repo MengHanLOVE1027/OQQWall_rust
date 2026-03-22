@@ -2,6 +2,7 @@ target/
 .target/
 **/*.rs.bk
 .DS_Store
+._*
 .idea/
 .vscode/
 *.swp
@@ -14,6 +15,6 @@ config.json
 devconfig.json
 crates/app/webview-ui/node_modules/
 
-dist/
+/dist/
 out/
 out-target/

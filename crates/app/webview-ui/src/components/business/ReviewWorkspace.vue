@@ -101,6 +101,15 @@ const visiblePosts = computed(() => {
   return items
 })
 
+const visibleSelectableReviewIds = computed(
+  () => visiblePosts.value.map((item) => item.review_id).filter(Boolean) as string[],
+)
+
+const visibleAllSelected = computed(() => {
+  if (visibleSelectableReviewIds.value.length === 0) return false
+  return visibleSelectableReviewIds.value.every((id) => review.selectedReviewIds.value.includes(id))
+})
+
 const summaryCards = computed(() => {
   const posts = visiblePosts.value
   const errorCount = posts.filter((post) => !!post.last_error).length
@@ -137,6 +146,17 @@ watch(autoRefresh, resetAutoRefresh)
 async function loadAll() {
   await review.loadPosts()
   lastUpdatedAt.value = Date.now()
+}
+
+function toggleVisibleSelectAll() {
+  if (visibleAllSelected.value) {
+    review.selectedReviewIds.value = review.selectedReviewIds.value.filter(
+      (id) => !visibleSelectableReviewIds.value.includes(id),
+    )
+    return
+  }
+  const set = new Set([...review.selectedReviewIds.value, ...visibleSelectableReviewIds.value])
+  review.selectedReviewIds.value = [...set]
 }
 
 function handleResetFilters() {
@@ -290,7 +310,7 @@ onBeforeUnmount(() => {
           <div class="toolbar-buttons">
             <n-button size="small" @click="handleResetFilters">重置筛选</n-button>
             <n-button size="small" @click="loadAll" :loading="review.loading.value">刷新</n-button>
-            <n-button size="small" @click="review.toggleSelectAll">{{ review.allSelected.value ? '取消全选' : '全选' }}</n-button>
+            <n-button size="small" @click="toggleVisibleSelectAll">{{ visibleAllSelected ? '取消全选' : '全选' }}</n-button>
           </div>
         </div>
       </div>

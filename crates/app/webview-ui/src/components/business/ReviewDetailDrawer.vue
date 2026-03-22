@@ -105,6 +105,8 @@ async function copyText(value: string, label: string) {
 
 const actionHelp = computed(() => {
   switch (actionForm.action) {
+    case 'reject':
+      return '可选填写拒绝说明，留空时会直接执行拒绝。'
     case 'defer':
       return '稿件会在指定时间后再次进入处理列表。'
     case 'quick_reply':
@@ -136,7 +138,14 @@ const blockStats = computed(() => {
 function buildPayload(action: string) {
   const payload: Record<string, unknown> = { action }
 
-  if (['reject', 'blacklist'].includes(action)) {
+  if (action === 'reject') {
+    const comment = actionForm.comment.trim()
+    if (comment) {
+      payload.comment = comment
+    }
+  }
+
+  if (action === 'blacklist') {
     const comment = actionForm.comment.trim()
     if (!comment) {
       throw new Error('请填写处理说明')
@@ -189,6 +198,9 @@ function requestExecute(actionOverride?: string) {
   if (!props.detail?.review_id) {
     message.error('当前稿件无法操作（无 review_id）')
     return
+  }
+  if (actionOverride) {
+    actionForm.action = actionOverride
   }
   confirmState.action = actionOverride ?? actionForm.action
   confirmState.show = true
@@ -283,7 +295,10 @@ async function confirmExecute() {
             </n-form-item>
             <p class="action-help">{{ actionHelp }}</p>
 
-            <n-form-item v-if="['reject', 'blacklist'].includes(actionForm.action)" label="处理说明">
+            <n-form-item
+              v-if="['reject', 'blacklist'].includes(actionForm.action)"
+              :label="actionForm.action === 'reject' ? '处理说明（可选）' : '处理说明'"
+            >
               <n-input
                 v-model:value="actionForm.comment"
                 type="textarea"
