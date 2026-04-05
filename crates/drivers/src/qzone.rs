@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Cursor;
 #[cfg(debug_assertions)]
 use std::io::{Read, Write};
 #[cfg(debug_assertions)]
@@ -11,6 +12,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+use image::codecs::jpeg::JpegEncoder;
+use image::{
+    self as image_rs, AnimationDecoder, DynamicImage, Frame as ImageFrame, GenericImageView,
+    ImageFormat,
+};
 use oqqwall_rust_core::draft::{Draft, DraftBlock, IngressMessage, MediaKind, MediaReference};
 use oqqwall_rust_core::event::{
     BlobEvent, DraftEvent, Event, IngressEvent, MediaEvent, RenderEvent, ReviewEvent,
@@ -47,6 +54,11 @@ const EMOTION_PUBLISH_URL: &str =
     "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6";
 const UPLOAD_IMAGE_URL: &str = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image";
 const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.1.3702.40 Safari/537.36 QBWebViewUA/2 QBWebViewType/1 WKType/1";
+const MAX_UPLOAD_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const PRESERVE_MAX_LONG_EDGE_1080P: u32 = 1920;
+const PRESERVE_MAX_SHORT_EDGE_1080P: u32 = 1080;
+const JPEG_MIN_DIMENSION: u32 = 512;
+const JPEG_QUALITY_STEPS: [u8; 6] = [90, 82, 74, 66, 58, 50];
 #[cfg(debug_assertions)]
 const EMUQZONE_PORT: u16 = 18080;
 #[cfg(debug_assertions)]
@@ -125,6 +137,12 @@ struct SendPlanMeta {
     group_id: String,
     priority: SendPriority,
     seq: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedUploadImage {
+    bytes: Vec<u8>,
+    strategy: &'static str,
 }
 
 #[derive(Default)]
@@ -960,7 +978,13 @@ impl QzoneClient {
     }
 
     async fn upload_image(&self, image: &[u8]) -> Result<Value, QzoneError> {
-        debug_log!("qzone upload image: size_bytes={}", image.len());
+        let prepared = prepare_upload_image(image)?;
+        debug_log!(
+            "qzone upload image: original_size_bytes={} prepared_size_bytes={} strategy={}",
+            image.len(),
+            prepared.bytes.len(),
+            prepared.strategy
+        );
         let cookie_header = build_cookie_header(&self.cookies);
         let skey = self
             .cookies
@@ -973,7 +997,7 @@ impl QzoneClient {
             .get("p_skey")
             .ok_or_else(|| QzoneError::account("missing p_skey"))?
             .clone();
-        let picfile = STANDARD.encode(image);
+        let picfile = STANDARD.encode(prepared.bytes.as_slice());
         let mut form: HashMap<&str, String> = HashMap::new();
         form.insert("filename", "filename".to_string());
         form.insert("zzpanelkey", "".to_string());
@@ -2056,6 +2080,283 @@ async fn collect_images(
     Ok(images)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadSourceFormat {
+    Gif,
+    Png,
+    Other,
+}
+
+fn prepare_upload_image(image: &[u8]) -> Result<PreparedUploadImage, QzoneError> {
+    if image.len() <= MAX_UPLOAD_IMAGE_BYTES {
+        return Ok(PreparedUploadImage {
+            bytes: image.to_vec(),
+            strategy: "original",
+        });
+    }
+
+    match detect_upload_source_format(image) {
+        UploadSourceFormat::Gif => prepare_gif_upload_image(image),
+        UploadSourceFormat::Png => {
+            let decoded = decode_dynamic_image(image)?;
+            if image_has_transparency(&decoded) {
+                prepare_transparent_png_upload_image(decoded)
+            } else {
+                prepare_standard_upload_image(decoded)
+            }
+        }
+        UploadSourceFormat::Other => prepare_standard_upload_image(decode_dynamic_image(image)?),
+    }
+}
+
+fn detect_upload_source_format(image: &[u8]) -> UploadSourceFormat {
+    match image_rs::guess_format(image).ok() {
+        Some(ImageFormat::Gif) => UploadSourceFormat::Gif,
+        Some(ImageFormat::Png) => UploadSourceFormat::Png,
+        _ => UploadSourceFormat::Other,
+    }
+}
+
+fn prepare_transparent_png_upload_image(
+    image: DynamicImage,
+) -> Result<PreparedUploadImage, QzoneError> {
+    let preserve_image = resize_for_1080p(&image);
+    let png_bytes = encode_png_image(&preserve_image)?;
+    if png_bytes.len() <= MAX_UPLOAD_IMAGE_BYTES {
+        return Ok(PreparedUploadImage {
+            bytes: png_bytes,
+            strategy: "png-preserved",
+        });
+    }
+
+    Ok(PreparedUploadImage {
+        bytes: compress_dynamic_as_jpeg(&preserve_image)?,
+        strategy: "png-to-jpeg",
+    })
+}
+
+fn prepare_gif_upload_image(image: &[u8]) -> Result<PreparedUploadImage, QzoneError> {
+    let frames = decode_gif_frames(image)?;
+    let first_frame = frames
+        .first()
+        .ok_or_else(|| QzoneError::unknown("gif contains no frames"))?;
+    let (target_width, target_height, resized) =
+        fit_within_1080p(first_frame.buffer().width(), first_frame.buffer().height());
+    let frames = resize_gif_frames(frames, target_width, target_height);
+    let fallback_image = DynamicImage::ImageRgba8(
+        frames
+            .first()
+            .ok_or_else(|| QzoneError::unknown("gif contains no frames"))?
+            .buffer()
+            .clone(),
+    );
+    let gif_bytes = encode_gif_frames(frames)?;
+    if gif_bytes.len() <= MAX_UPLOAD_IMAGE_BYTES {
+        return Ok(PreparedUploadImage {
+            bytes: gif_bytes,
+            strategy: if resized {
+                "gif-preserved"
+            } else {
+                "gif-reencoded"
+            },
+        });
+    }
+
+    Ok(PreparedUploadImage {
+        bytes: compress_dynamic_as_jpeg(&fallback_image)?,
+        strategy: "gif-to-jpeg",
+    })
+}
+
+fn prepare_standard_upload_image(image: DynamicImage) -> Result<PreparedUploadImage, QzoneError> {
+    Ok(PreparedUploadImage {
+        bytes: compress_dynamic_as_jpeg(&image)?,
+        strategy: "jpeg-reencoded",
+    })
+}
+
+fn decode_dynamic_image(image: &[u8]) -> Result<DynamicImage, QzoneError> {
+    image_rs::load_from_memory(image)
+        .map_err(|err| QzoneError::unknown(format!("decode image failed: {}", err)))
+}
+
+fn decode_gif_frames(image: &[u8]) -> Result<Vec<ImageFrame>, QzoneError> {
+    let decoder = GifDecoder::new(Cursor::new(image))
+        .map_err(|err| QzoneError::unknown(format!("decode gif failed: {}", err)))?;
+    decoder
+        .into_frames()
+        .collect_frames()
+        .map_err(|err| QzoneError::unknown(format!("decode gif frames failed: {}", err)))
+}
+
+fn image_has_transparency(image: &DynamicImage) -> bool {
+    image.to_rgba8().pixels().any(|pixel| pixel[3] < u8::MAX)
+}
+
+fn resize_for_1080p(image: &DynamicImage) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    let (target_width, target_height, resized) = fit_within_1080p(width, height);
+    if !resized {
+        return image.clone();
+    }
+    image.resize_exact(
+        target_width,
+        target_height,
+        image_rs::imageops::FilterType::Lanczos3,
+    )
+}
+
+fn resize_gif_frames(
+    frames: Vec<ImageFrame>,
+    target_width: u32,
+    target_height: u32,
+) -> Vec<ImageFrame> {
+    frames
+        .into_iter()
+        .map(|frame| {
+            if frame.buffer().width() == target_width && frame.buffer().height() == target_height {
+                return frame;
+            }
+            let delay = frame.delay();
+            let resized = image_rs::imageops::resize(
+                frame.buffer(),
+                target_width,
+                target_height,
+                image_rs::imageops::FilterType::Lanczos3,
+            );
+            ImageFrame::from_parts(resized, 0, 0, delay)
+        })
+        .collect()
+}
+
+fn encode_png_image(image: &DynamicImage) -> Result<Vec<u8>, QzoneError> {
+    let mut cursor = Cursor::new(Vec::new());
+    image
+        .write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|err| QzoneError::unknown(format!("encode png failed: {}", err)))?;
+    Ok(cursor.into_inner())
+}
+
+fn encode_gif_frames(frames: Vec<ImageFrame>) -> Result<Vec<u8>, QzoneError> {
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut encoder = GifEncoder::new(&mut cursor);
+        encoder
+            .set_repeat(Repeat::Infinite)
+            .map_err(|err| QzoneError::unknown(format!("encode gif repeat failed: {}", err)))?;
+        for frame in frames {
+            encoder
+                .encode_frame(frame)
+                .map_err(|err| QzoneError::unknown(format!("encode gif frame failed: {}", err)))?;
+        }
+    }
+    Ok(cursor.into_inner())
+}
+
+fn compress_dynamic_as_jpeg(image: &DynamicImage) -> Result<Vec<u8>, QzoneError> {
+    let mut working = image.clone();
+    let mut smallest_size = usize::MAX;
+
+    loop {
+        for quality in JPEG_QUALITY_STEPS {
+            let encoded = encode_jpeg_image(&working, quality)?;
+            if encoded.len() <= MAX_UPLOAD_IMAGE_BYTES {
+                return Ok(encoded);
+            }
+            smallest_size = smallest_size.min(encoded.len());
+        }
+
+        let (width, height) = working.dimensions();
+        let Some((next_width, next_height)) = next_scaled_dimensions(width, height) else {
+            break;
+        };
+        if next_width < JPEG_MIN_DIMENSION || next_height < JPEG_MIN_DIMENSION {
+            break;
+        }
+        working = working.resize_exact(
+            next_width,
+            next_height,
+            image_rs::imageops::FilterType::Lanczos3,
+        );
+    }
+
+    Err(QzoneError::unknown(format!(
+        "image remains above 4 MiB after compression: smallest_size_bytes={}",
+        smallest_size
+    )))
+}
+
+fn encode_jpeg_image(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, QzoneError> {
+    let rgb = flatten_image_for_jpeg(image);
+    let mut out = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut out, quality);
+    encoder
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image_rs::ColorType::Rgb8.into(),
+        )
+        .map_err(|err| QzoneError::unknown(format!("encode jpeg failed: {}", err)))?;
+    Ok(out)
+}
+
+fn flatten_image_for_jpeg(image: &DynamicImage) -> image_rs::RgbImage {
+    let rgba = image.to_rgba8();
+    let mut rgb = image_rs::RgbImage::new(rgba.width(), rgba.height());
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let alpha = pixel[3] as u32;
+        let blend = |channel: u8| -> u8 {
+            let fg = channel as u32;
+            let bg = 255u32;
+            ((fg * alpha + bg * (255 - alpha) + 127) / 255) as u8
+        };
+        rgb.put_pixel(
+            x,
+            y,
+            image_rs::Rgb([blend(pixel[0]), blend(pixel[1]), blend(pixel[2])]),
+        );
+    }
+    rgb
+}
+
+fn fit_within_1080p(width: u32, height: u32) -> (u32, u32, bool) {
+    if width == 0 || height == 0 {
+        return (width, height, false);
+    }
+    let (max_width, max_height) = if width >= height {
+        (PRESERVE_MAX_LONG_EDGE_1080P, PRESERVE_MAX_SHORT_EDGE_1080P)
+    } else {
+        (PRESERVE_MAX_SHORT_EDGE_1080P, PRESERVE_MAX_LONG_EDGE_1080P)
+    };
+    fit_within_bounds(width, height, max_width, max_height)
+}
+
+fn fit_within_bounds(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u32, bool) {
+    if width <= max_width && height <= max_height {
+        return (width, height, false);
+    }
+
+    let width_scale = max_width as f64 / width as f64;
+    let height_scale = max_height as f64 / height as f64;
+    let scale = width_scale.min(height_scale);
+    let target_width = ((width as f64 * scale).floor() as u32).max(1);
+    let target_height = ((height as f64 * scale).floor() as u32).max(1);
+    (target_width, target_height, true)
+}
+
+fn next_scaled_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let next_width = ((width as f64 * 0.85).floor() as u32).max(1);
+    let next_height = ((height as f64 * 0.85).floor() as u32).max(1);
+    if next_width == width && next_height == height {
+        return None;
+    }
+    Some((next_width, next_height))
+}
+
 fn get_picbo_and_richval(upload: &Value) -> Result<(String, String), QzoneError> {
     let ret = upload.get("ret").and_then(|v| v.as_i64()).unwrap_or(-1);
     if ret != 0 {
@@ -2117,5 +2418,127 @@ fn field_to_string(data: &Value, key: &str) -> Result<String, QzoneError> {
         Value::String(s) => Ok(s.clone()),
         Value::Number(n) => Ok(n.to_string()),
         _ => Err(QzoneError::unknown(format!("invalid field {}", key))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Delay, Frame as ImageFrame, Rgba, RgbaImage};
+
+    #[test]
+    fn small_image_keeps_original_bytes() {
+        let image = make_rgba_pattern(320, 240, false);
+        let bytes = encode_png_image(&DynamicImage::ImageRgba8(image)).expect("encode png");
+        assert!(bytes.len() < MAX_UPLOAD_IMAGE_BYTES);
+
+        let prepared = prepare_upload_image(&bytes).expect("prepare image");
+        assert_eq!(prepared.strategy, "original");
+        assert_eq!(prepared.bytes, bytes);
+    }
+
+    #[test]
+    fn oversized_transparent_png_prefers_png_before_jpeg() {
+        let image = make_rgba_pattern(640, 360, true);
+        let mut bytes = encode_png_image(&DynamicImage::ImageRgba8(image)).expect("encode png");
+        pad_to_oversized(&mut bytes);
+        assert!(bytes.len() > MAX_UPLOAD_IMAGE_BYTES);
+
+        let prepared = prepare_upload_image(&bytes).expect("prepare png");
+        assert_eq!(prepared.strategy, "png-preserved");
+        assert!(prepared.bytes.len() <= MAX_UPLOAD_IMAGE_BYTES);
+        assert!(is_png(&prepared.bytes));
+    }
+
+    #[test]
+    fn oversized_transparent_png_falls_back_to_jpeg_at_1080p() {
+        let image = make_noisy_rgba(1920, 1080, true);
+        let bytes = encode_png_image(&DynamicImage::ImageRgba8(image)).expect("encode png");
+        assert!(bytes.len() > MAX_UPLOAD_IMAGE_BYTES);
+
+        let prepared = prepare_upload_image(&bytes).expect("prepare png");
+        assert_eq!(prepared.strategy, "png-to-jpeg");
+        assert!(prepared.bytes.len() <= MAX_UPLOAD_IMAGE_BYTES);
+        assert!(is_jpeg(&prepared.bytes));
+    }
+
+    #[test]
+    fn oversized_gif_prefers_gif_before_jpeg() {
+        let mut frames = Vec::new();
+        for shift in [0u8, 17u8] {
+            let mut frame = make_rgba_pattern(640, 360, false);
+            for pixel in frame.pixels_mut() {
+                pixel.0[0] = pixel.0[0].wrapping_add(shift);
+            }
+            frames.push(ImageFrame::from_parts(
+                frame,
+                0,
+                0,
+                Delay::from_numer_denom_ms(120, 1),
+            ));
+        }
+        let mut bytes = encode_gif_frames(frames).expect("encode gif");
+        pad_to_oversized(&mut bytes);
+        assert!(bytes.len() > MAX_UPLOAD_IMAGE_BYTES);
+
+        let prepared = prepare_upload_image(&bytes).expect("prepare gif");
+        assert!(
+            prepared.strategy == "gif-preserved" || prepared.strategy == "gif-reencoded",
+            "unexpected strategy: {}",
+            prepared.strategy
+        );
+        assert!(prepared.bytes.len() <= MAX_UPLOAD_IMAGE_BYTES);
+        assert!(is_gif(&prepared.bytes));
+    }
+
+    fn make_rgba_pattern(width: u32, height: u32, transparent: bool) -> RgbaImage {
+        let mut image = RgbaImage::new(width, height);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let alpha = if transparent {
+                ((x.wrapping_mul(17) ^ y.wrapping_mul(31)) & 0xFF) as u8
+            } else {
+                u8::MAX
+            };
+            *pixel = Rgba([
+                ((x * 13 + y * 7) & 0xFF) as u8,
+                ((x * 3 + y * 19) & 0xFF) as u8,
+                ((x * 23 + y * 5) & 0xFF) as u8,
+                alpha,
+            ]);
+        }
+        image
+    }
+
+    fn make_noisy_rgba(width: u32, height: u32, transparent: bool) -> RgbaImage {
+        let mut image = RgbaImage::new(width, height);
+        let mut state = 0x1234_5678u32;
+        for (_, _, pixel) in image.enumerate_pixels_mut() {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let r = (state >> 24) as u8;
+            let g = (state >> 16) as u8;
+            let b = (state >> 8) as u8;
+            let a = if transparent { state as u8 } else { u8::MAX };
+            *pixel = Rgba([r, g, b, a]);
+        }
+        image
+    }
+
+    fn pad_to_oversized(bytes: &mut Vec<u8>) {
+        let target = MAX_UPLOAD_IMAGE_BYTES + 1024;
+        if bytes.len() < target {
+            bytes.resize(target, 0);
+        }
+    }
+
+    fn is_png(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+    }
+
+    fn is_jpeg(bytes: &[u8]) -> bool {
+        bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+    }
+
+    fn is_gif(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
     }
 }
