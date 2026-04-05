@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use oqqwall_rust_core::command::{
-    GlobalAction, GlobalActionCommand, ReviewAction, ReviewActionCommand,
+    GlobalAction, GlobalActionBatchCommand, GlobalActionCommand, ReviewAction,
+    ReviewActionBatchCommand, ReviewActionCommand, ShortcutScope,
 };
 use oqqwall_rust_core::draft::{IngressAttachment, IngressMessage, MediaKind, MediaReference};
 use oqqwall_rust_core::event::{
@@ -36,6 +37,13 @@ use tokio_tungstenite::{
 };
 
 use crate::blob_cache;
+use crate::shortcut::{
+    RAW_BUILTIN_PREFIX, ShortcutTemplateContext, is_builtin_review_command_name,
+    parse_builtin_global_action, parse_builtin_review_action, parse_global_shortcut_actions,
+    parse_review_shortcut_actions, shortcut_field_name, shortcut_scope_label,
+    validate_global_shortcut_definition, validate_review_shortcut_definition,
+    validate_shortcut_name,
+};
 
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
@@ -66,6 +74,8 @@ pub struct NapCatRuntimeConfig {
     pub friend_add_message: Option<String>,
     pub max_queue: usize,
     pub quick_replies: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub review_shortcuts: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub global_shortcuts: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 const MAX_FORWARD_DEPTH: u32 = 4;
@@ -151,9 +161,21 @@ enum PendingAction {
 enum AuditCommand {
     Review {
         review_code: Option<ReviewCode>,
-        action: ReviewAction,
+        action: ParsedReviewAction,
     },
-    Global(GlobalAction),
+    Global(ParsedGlobalAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedReviewAction {
+    Builtin(ReviewAction),
+    Shortcut { key: String, args: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedGlobalAction {
+    Builtin(GlobalAction),
+    Batch(Vec<GlobalAction>),
 }
 
 #[derive(Debug, Clone)]
@@ -1117,6 +1139,11 @@ async fn build_action_from_event(
             guard.post_external_code.insert(post_id, external_code);
             None
         }
+        Event::Review(ReviewEvent::ReviewExternalCodeCleared { post_id }) => {
+            let mut guard = state.lock().await;
+            guard.post_external_code.remove(&post_id);
+            None
+        }
         Event::Review(ReviewEvent::ReviewPublished {
             review_id,
             audit_msg_id,
@@ -1944,7 +1971,7 @@ async fn parse_inbound_event(
         } else {
             false
         };
-        if let Some(command) = parse_audit_command(&text, reply_id.is_some()) {
+        if let Some(command) = parse_audit_command(&text, reply_id.is_some(), runtime) {
             if !command_context_allowed(&command, mentions_self, reply_bound) {
                 return None;
             }
@@ -1953,12 +1980,12 @@ async fn parse_inbound_event(
                 return None;
             }
             match command {
-                AuditCommand::Global(GlobalAction::Help) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::Help)) => {
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     send_group_text(out_tx, &chat_group_id, HELP_TEXT).await;
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::PendingList) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::PendingList)) => {
                     let pending_text = {
                         let guard = state.lock().await;
                         build_pending_list_text(&guard, &runtime.group_id)
@@ -1967,7 +1994,7 @@ async fn parse_inbound_event(
                     send_group_text(out_tx, &chat_group_id, &pending_text).await;
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::BlacklistList) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::BlacklistList)) => {
                     let blacklist_text = {
                         let guard = state.lock().await;
                         build_blacklist_list_text(&guard, &runtime.group_id)
@@ -1976,7 +2003,9 @@ async fn parse_inbound_event(
                     send_group_text(out_tx, &chat_group_id, &blacklist_text).await;
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::BlacklistRemove { sender_id }) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::BlacklistRemove { sender_id },
+                )) => {
                     let removed = {
                         let mut guard = state.lock().await;
                         if let Some(group) = guard.blacklist.get_mut(&runtime.group_id) {
@@ -2004,13 +2033,15 @@ async fn parse_inbound_event(
                         tz_offset_minutes: runtime.tz_offset_minutes,
                     }));
                 }
-                AuditCommand::Global(GlobalAction::QuickReplyList) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::QuickReplyList)) => {
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     let list_text = build_quick_reply_list_text(runtime);
                     send_group_text(out_tx, &chat_group_id, &list_text).await;
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::QuickReplyAdd { key, text }) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::QuickReplyAdd { key, text },
+                )) => {
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     let key = key.trim().to_string();
                     let text = text.trim().to_string();
@@ -2024,6 +2055,22 @@ async fn parse_inbound_event(
                             out_tx,
                             &chat_group_id,
                             "错误：快捷回复指令与审核指令冲突，请更换指令名",
+                        )
+                        .await;
+                        return None;
+                    }
+                    let review_shortcut_conflict = {
+                        let guard = runtime
+                            .review_shortcuts
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner());
+                        guard.contains_key(&key)
+                    };
+                    if review_shortcut_conflict {
+                        send_group_text(
+                            out_tx,
+                            &chat_group_id,
+                            "错误：快捷回复指令与审核快捷指令冲突，请更换指令名",
                         )
                         .await;
                         return None;
@@ -2056,7 +2103,9 @@ async fn parse_inbound_event(
                     }
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::QuickReplyDelete { key }) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::QuickReplyDelete { key },
+                )) => {
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     let key = key.trim().to_string();
                     if key.is_empty() {
@@ -2100,7 +2149,135 @@ async fn parse_inbound_event(
                     }
                     return None;
                 }
-                AuditCommand::Global(GlobalAction::SelfCheck) => {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::ShortcutList)) => {
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    let list_text = build_shortcut_list_text(runtime);
+                    send_group_text(out_tx, &chat_group_id, &list_text).await;
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::ShortcutAdd {
+                    scope,
+                    key,
+                    definition,
+                })) => {
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    let key = match validate_shortcut_name(&key) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            let msg = format!(
+                                "错误：{}快捷指令名无效：{}",
+                                shortcut_scope_label(scope),
+                                err
+                            );
+                            send_group_text(out_tx, &chat_group_id, &msg).await;
+                            return None;
+                        }
+                    };
+                    let definition = definition.trim().to_string();
+                    let validate_result = match scope {
+                        ShortcutScope::Review => {
+                            let quick_reply_conflict = {
+                                let guard = runtime
+                                    .quick_replies
+                                    .lock()
+                                    .unwrap_or_else(|err| err.into_inner());
+                                guard.contains_key(&key)
+                            };
+                            if quick_reply_conflict {
+                                Err("审核快捷指令与快捷回复重名".to_string())
+                            } else {
+                                validate_review_shortcut_definition(&definition)
+                            }
+                        }
+                        ShortcutScope::Global => validate_global_shortcut_definition(&definition),
+                    };
+                    if let Err(err) = validate_result {
+                        let msg = format!(
+                            "错误：{}快捷指令定义无效：{}",
+                            shortcut_scope_label(scope),
+                            err
+                        );
+                        send_group_text(out_tx, &chat_group_id, &msg).await;
+                        return None;
+                    }
+                    let mut snapshot = {
+                        let storage = shortcut_storage(runtime, scope);
+                        let mut guard = storage.lock().unwrap_or_else(|err| err.into_inner());
+                        guard.insert(key.clone(), definition.clone());
+                        guard.clone()
+                    };
+                    sort_string_map(&mut snapshot);
+                    match persist_group_string_map(
+                        &runtime.group_id,
+                        shortcut_field_name(scope),
+                        &snapshot,
+                    ) {
+                        Ok(()) => {
+                            let msg =
+                                format!("已添加{}快捷指令：{}", shortcut_scope_label(scope), key);
+                            send_group_text(out_tx, &chat_group_id, &msg).await;
+                        }
+                        Err(err) => {
+                            {
+                                let storage = shortcut_storage(runtime, scope);
+                                let mut guard = storage.lock().unwrap_or_else(|e| e.into_inner());
+                                guard.remove(&key);
+                            }
+                            let msg = format!("添加快捷指令失败：{}", err);
+                            send_group_text(out_tx, &chat_group_id, &msg).await;
+                        }
+                    }
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::ShortcutDelete { scope, key },
+                )) => {
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    let key = key.trim().to_string();
+                    if key.is_empty() {
+                        send_group_text(out_tx, &chat_group_id, "错误：请提供要删除的快捷指令")
+                            .await;
+                        return None;
+                    }
+                    let removed_snapshot = {
+                        let storage = shortcut_storage(runtime, scope);
+                        let mut guard = storage.lock().unwrap_or_else(|err| err.into_inner());
+                        let removed = guard.remove(&key);
+                        (removed, guard.clone())
+                    };
+                    if removed_snapshot.0.is_none() {
+                        let msg = format!("{}快捷指令不存在：{}", shortcut_scope_label(scope), key);
+                        send_group_text(out_tx, &chat_group_id, &msg).await;
+                        return None;
+                    }
+                    let mut sorted = removed_snapshot.1;
+                    sort_string_map(&mut sorted);
+                    match persist_group_string_map(
+                        &runtime.group_id,
+                        shortcut_field_name(scope),
+                        &sorted,
+                    ) {
+                        Ok(()) => {
+                            let msg =
+                                format!("已删除{}快捷指令：{}", shortcut_scope_label(scope), key);
+                            send_group_text(out_tx, &chat_group_id, &msg).await;
+                        }
+                        Err(err) => {
+                            if let Some(removed_definition) = removed_snapshot.0 {
+                                let storage = shortcut_storage(runtime, scope);
+                                {
+                                    let mut guard =
+                                        storage.lock().unwrap_or_else(|e| e.into_inner());
+                                    guard.insert(key.clone(), removed_definition);
+                                }
+                            }
+                            let msg = format!("删除快捷指令失败：{}", err);
+                            send_group_text(out_tx, &chat_group_id, &msg).await;
+                        }
+                    }
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::SelfCheck)) => {
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     let report = {
                         let guard = state.lock().await;
@@ -2109,17 +2286,55 @@ async fn parse_inbound_event(
                     send_group_text(out_tx, &chat_group_id, &report).await;
                     return None;
                 }
-                AuditCommand::Global(action) => {
-                    if let GlobalAction::Recall { review_code } = &action {
+                AuditCommand::Global(ParsedGlobalAction::Builtin(action)) => {
+                    {
                         let mut guard = state.lock().await;
-                        if let Some(review_id) = guard.review_by_code.get(review_code).copied() {
-                            guard.processed_reviews.remove(&review_id);
+                        if let Err(msg) = validate_global_action(&guard, &runtime.group_id, &action)
+                        {
+                            drop(guard);
+                            send_group_text(out_tx, &chat_group_id, msg).await;
+                            return None;
+                        }
+                        if let GlobalAction::Recall { review_code } = &action {
+                            if let Some(review_id) = guard.review_by_code.get(review_code).copied()
+                            {
+                                guard.processed_reviews.remove(&review_id);
+                            }
                         }
                     }
                     send_group_text(out_tx, &chat_group_id, "已收到指令").await;
                     return Some(Command::GlobalAction(GlobalActionCommand {
                         group_id: runtime.group_id.clone(),
                         action,
+                        operator_id: user_id.to_string(),
+                        now_ms: timestamp_ms,
+                        tz_offset_minutes: runtime.tz_offset_minutes,
+                    }));
+                }
+                AuditCommand::Global(ParsedGlobalAction::Batch(actions)) => {
+                    {
+                        let mut guard = state.lock().await;
+                        for action in &actions {
+                            if let Err(msg) =
+                                validate_global_action(&guard, &runtime.group_id, action)
+                            {
+                                drop(guard);
+                                send_group_text(out_tx, &chat_group_id, msg).await;
+                                return None;
+                            }
+                            if let GlobalAction::Recall { review_code } = action {
+                                if let Some(review_id) =
+                                    guard.review_by_code.get(review_code).copied()
+                                {
+                                    guard.processed_reviews.remove(&review_id);
+                                }
+                            }
+                        }
+                    }
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    return Some(Command::GlobalActionBatch(GlobalActionBatchCommand {
+                        group_id: runtime.group_id.clone(),
+                        actions,
                         operator_id: user_id.to_string(),
                         now_ms: timestamp_ms,
                         tz_offset_minutes: runtime.tz_offset_minutes,
@@ -2983,7 +3198,7 @@ async fn parse_review_command(
     _account_id: &str,
     group_id: &str,
     review_code: Option<ReviewCode>,
-    action: ReviewAction,
+    action: ParsedReviewAction,
     reply_id: Option<String>,
     now_ms: i64,
 ) -> Option<Command> {
@@ -3048,17 +3263,84 @@ async fn parse_review_command(
         return None;
     }
 
-    send_group_text(out_tx, group_id, "已收到指令").await;
+    let command = match action {
+        ParsedReviewAction::Builtin(action) => Command::ReviewAction(ReviewActionCommand {
+            review_id,
+            review_code,
+            audit_msg_id,
+            action,
+            operator_id: user_id.to_string(),
+            now_ms,
+            tz_offset_minutes: runtime.tz_offset_minutes,
+        }),
+        ParsedReviewAction::Shortcut { key, args } => {
+            let definition = {
+                let guard = runtime
+                    .review_shortcuts
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                guard.get(&key).cloned()
+            };
+            let Some(definition) = definition else {
+                let msg = format!("审核快捷指令不存在：{}", key);
+                send_group_text(out_tx, group_id, &msg).await;
+                return None;
+            };
+            let (resolved_review_code, sender_id) = {
+                let guard = state.lock().await;
+                let resolved_review_code = review_id.and_then(|resolved_id| {
+                    guard
+                        .review_info
+                        .get(&resolved_id)
+                        .map(|info| info.review_code)
+                });
+                let sender_id = review_id.and_then(|resolved_id| {
+                    resolve_review_submitter(&guard, resolved_id).map(|(_, sender)| sender)
+                });
+                (resolved_review_code, sender_id)
+            };
+            let actions = match parse_review_shortcut_actions(
+                &definition,
+                &ShortcutTemplateContext {
+                    args: args.trim(),
+                    review_code: resolved_review_code,
+                    sender_id: sender_id.as_deref(),
+                    group_id: &runtime.group_id,
+                },
+            ) {
+                Ok(actions) => actions,
+                Err(err) => {
+                    let msg = format!("审核快捷指令展开失败：{}", err);
+                    send_group_text(out_tx, group_id, &msg).await;
+                    return None;
+                }
+            };
+            if actions.len() == 1 {
+                Command::ReviewAction(ReviewActionCommand {
+                    review_id,
+                    review_code,
+                    audit_msg_id,
+                    action: actions.into_iter().next()?,
+                    operator_id: user_id.to_string(),
+                    now_ms,
+                    tz_offset_minutes: runtime.tz_offset_minutes,
+                })
+            } else {
+                Command::ReviewActionBatch(ReviewActionBatchCommand {
+                    review_id,
+                    review_code,
+                    audit_msg_id,
+                    actions,
+                    operator_id: user_id.to_string(),
+                    now_ms,
+                    tz_offset_minutes: runtime.tz_offset_minutes,
+                })
+            }
+        }
+    };
 
-    Some(Command::ReviewAction(ReviewActionCommand {
-        review_id,
-        review_code,
-        audit_msg_id,
-        action,
-        operator_id: user_id.to_string(),
-        now_ms,
-        tz_offset_minutes: runtime.tz_offset_minutes,
-    }))
+    send_group_text(out_tx, group_id, "已收到指令").await;
+    Some(command)
 }
 
 fn message_mentions_self(value: Option<&Value>, self_id: &str) -> bool {
@@ -3098,13 +3380,14 @@ fn command_context_allowed(command: &AuditCommand, mentions_self: bool, reply_bo
     }
 }
 
-fn parse_audit_command(text: &str, has_reply: bool) -> Option<AuditCommand> {
+fn parse_audit_command(
+    text: &str,
+    has_reply: bool,
+    runtime: &NapCatRuntimeConfig,
+) -> Option<AuditCommand> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
-    }
-    if is_help_command(trimmed) {
-        return Some(AuditCommand::Global(GlobalAction::Help));
     }
 
     let (first, rest) = split_first_token_with_rest(trimmed)?;
@@ -3113,26 +3396,26 @@ fn parse_audit_command(text: &str, has_reply: bool) -> Option<AuditCommand> {
         let review_code = first.parse::<ReviewCode>().ok()?;
         let (command, args_text) = split_first_token_with_rest(rest)?;
         let args_text = args_text.trim_start();
-        let action = parse_review_action(command, args_text, true)?;
+        let action = parse_review_action(command, args_text, true, runtime)?;
         return Some(AuditCommand::Review {
             review_code: Some(review_code),
             action,
         });
     }
 
-    if let Some(action) = parse_review_action(first, &rest, false) {
+    if let Some(action) = parse_review_action(first, &rest, false, runtime) {
         return Some(AuditCommand::Review {
             review_code: None,
             action,
         });
     }
 
-    if let Some(action) = parse_global_action(first, &rest) {
+    if let Some(action) = parse_global_action(first, &rest, runtime) {
         return Some(AuditCommand::Global(action));
     }
 
     if has_reply {
-        if let Some(action) = parse_review_action(first, &rest, true) {
+        if let Some(action) = parse_review_action(first, &rest, true, runtime) {
             return Some(AuditCommand::Review {
                 review_code: None,
                 action,
@@ -3158,123 +3441,111 @@ fn split_first_token_with_rest(input: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn parse_review_action(command: &str, rest: &str, allow_quick_reply: bool) -> Option<ReviewAction> {
-    let rest = rest.trim();
-    let action = match command {
-        "是" => ReviewAction::Approve,
-        "否" => ReviewAction::Skip,
-        "等" => ReviewAction::Defer { delay_ms: 180_000 },
-        "删" => ReviewAction::Delete,
-        "拒" => ReviewAction::Reject,
-        "立即" => ReviewAction::Immediate,
-        "刷新" => ReviewAction::Refresh,
-        "重渲染" => ReviewAction::Rerender,
-        "消息全选" => ReviewAction::SelectAllMessages,
-        "匿" => ReviewAction::ToggleAnonymous,
-        "扩列审查" => ReviewAction::ExpandAudit,
-        "展示" => ReviewAction::Show,
-        "评论" => ReviewAction::Comment {
-            text: rest.to_string(),
-        },
-        "回复" => ReviewAction::Reply {
-            text: rest.to_string(),
-        },
-        "合并" => {
-            let target = rest.split_whitespace().next()?;
-            let review_code = target.parse::<ReviewCode>().ok()?;
-            ReviewAction::Merge { review_code }
-        }
-        "拉黑" => ReviewAction::Blacklist {
-            reason: if rest.is_empty() {
-                None
-            } else {
-                Some(rest.to_string())
-            },
-        },
-        _ => {
-            if allow_quick_reply {
-                ReviewAction::QuickReply {
-                    key: command.to_string(),
-                }
-            } else {
-                return None;
-            }
-        }
+fn parse_review_action(
+    command: &str,
+    rest: &str,
+    allow_quick_reply: bool,
+    runtime: &NapCatRuntimeConfig,
+) -> Option<ParsedReviewAction> {
+    if command == RAW_BUILTIN_PREFIX {
+        let (raw_command, raw_rest) = split_first_token_with_rest(rest)?;
+        return parse_builtin_review_action(raw_command, raw_rest.trim_start(), false)
+            .map(ParsedReviewAction::Builtin);
+    }
+
+    let has_shortcut = {
+        let guard = runtime
+            .review_shortcuts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        guard.contains_key(command)
     };
+    if has_shortcut {
+        return Some(ParsedReviewAction::Shortcut {
+            key: command.to_string(),
+            args: rest.trim().to_string(),
+        });
+    }
 
-    Some(action)
+    parse_builtin_review_action(command, rest.trim_start(), allow_quick_reply)
+        .map(ParsedReviewAction::Builtin)
 }
 
-fn parse_global_action(command: &str, rest: &str) -> Option<GlobalAction> {
-    let rest = rest.trim();
-    match command {
-        "帮助" => Some(GlobalAction::Help),
-        "调出" => parse_review_code(rest).map(|review_code| GlobalAction::Recall { review_code }),
-        "信息" => parse_review_code(rest).map(|review_code| GlobalAction::Info { review_code }),
-        "手动重新登录" => Some(GlobalAction::ManualRelogin),
-        "自动重新登录" => Some(GlobalAction::AutoRelogin),
-        "待处理" => Some(GlobalAction::PendingList),
-        "删除待处理" => Some(GlobalAction::PendingClear),
-        "删除暂存区" => Some(GlobalAction::SendQueueClear),
-        "发送暂存区" => Some(GlobalAction::SendQueueFlush),
-        "清理发送中" => Some(GlobalAction::SendInFlightClear),
-        "列出拉黑" => Some(GlobalAction::BlacklistList),
-        "取消拉黑" => {
-            parse_first_token(rest).map(|sender_id| GlobalAction::BlacklistRemove { sender_id })
+fn parse_global_action(
+    command: &str,
+    rest: &str,
+    runtime: &NapCatRuntimeConfig,
+) -> Option<ParsedGlobalAction> {
+    if command == RAW_BUILTIN_PREFIX {
+        let (raw_command, raw_rest) = split_first_token_with_rest(rest)?;
+        return parse_builtin_global_action(raw_command, raw_rest).map(ParsedGlobalAction::Builtin);
+    }
+
+    let shortcut = {
+        let guard = runtime
+            .global_shortcuts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        guard.get(command).cloned()
+    };
+    if let Some(definition) = shortcut {
+        let actions = parse_global_shortcut_actions(
+            &definition,
+            &ShortcutTemplateContext {
+                args: rest.trim(),
+                review_code: None,
+                sender_id: None,
+                group_id: &runtime.group_id,
+            },
+        )
+        .ok()?;
+        return if actions.len() == 1 {
+            Some(ParsedGlobalAction::Builtin(actions.into_iter().next()?))
+        } else {
+            Some(ParsedGlobalAction::Batch(actions))
+        };
+    }
+
+    parse_builtin_global_action(command, rest).map(ParsedGlobalAction::Builtin)
+}
+
+fn validate_global_action(
+    state: &NapCatState,
+    group_id: &str,
+    action: &GlobalAction,
+) -> Result<(), &'static str> {
+    match action {
+        GlobalAction::Withdraw { review_code } => {
+            validate_withdraw_action(state, group_id, *review_code)
         }
-        "设定编号" => parse_u64(rest).map(|value| GlobalAction::SetExternalNumber { value }),
-        "快捷回复" => parse_quick_reply_action(rest),
-        "自检" => Some(GlobalAction::SelfCheck),
-        "系统修复" => Some(GlobalAction::SystemRepair),
-        _ => None,
+        _ => Ok(()),
     }
 }
 
-fn parse_quick_reply_action(rest: &str) -> Option<GlobalAction> {
-    let mut tokens = rest.split_whitespace();
-    let sub = tokens.next();
-    match sub {
-        None => Some(GlobalAction::QuickReplyList),
-        Some("添加") => {
-            let payload = tokens.collect::<Vec<_>>().join(" ");
-            let (key, text) = payload.split_once('=')?;
-            let key = key.trim();
-            let text = text.trim();
-            if key.is_empty() || text.is_empty() {
-                return None;
-            }
-            Some(GlobalAction::QuickReplyAdd {
-                key: key.to_string(),
-                text: text.to_string(),
-            })
-        }
-        Some("删除") => {
-            let key = tokens.next()?.trim();
-            if key.is_empty() {
-                return None;
-            }
-            Some(GlobalAction::QuickReplyDelete {
-                key: key.to_string(),
-            })
-        }
-        _ => None,
+fn validate_withdraw_action(
+    state: &NapCatState,
+    group_id: &str,
+    review_code: ReviewCode,
+) -> Result<(), &'static str> {
+    let Some(review_id) = state.review_by_code.get(&review_code) else {
+        return Err("找不到编号对应稿件");
+    };
+    let Some(info) = state.review_info.get(review_id) else {
+        return Err("找不到编号对应稿件");
+    };
+    if info.group_id != group_id {
+        return Err("无权限操作该稿件");
     }
-}
-
-fn parse_review_code(text: &str) -> Option<ReviewCode> {
-    let token = text.split_whitespace().next()?;
-    let trimmed = token.strip_prefix('#').unwrap_or(token);
-    trimmed.parse::<ReviewCode>().ok()
-}
-
-fn parse_first_token(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .next()
-        .map(|token| token.to_string())
-}
-
-fn parse_u64(text: &str) -> Option<u64> {
-    text.split_whitespace().next()?.parse::<u64>().ok()
+    let Some(plan) = state.send_plans.get(&info.post_id) else {
+        return Err("该稿件不在暂存区");
+    };
+    if plan.group_id != group_id {
+        return Err("无权限操作该稿件");
+    }
+    if !state.post_external_code.contains_key(&info.post_id) {
+        return Err("该稿件缺少外部编号");
+    }
+    Ok(())
 }
 
 fn build_pending_list_text(state: &NapCatState, group_id: &str) -> String {
@@ -3401,6 +3672,43 @@ fn build_quick_reply_list_text(runtime: &NapCatRuntimeConfig) -> String {
     lines.join("\n")
 }
 
+fn build_shortcut_list_text(runtime: &NapCatRuntimeConfig) -> String {
+    let review_lines = build_shortcut_scope_lines(runtime, ShortcutScope::Review);
+    let global_lines = build_shortcut_scope_lines(runtime, ShortcutScope::Global);
+    if review_lines.is_empty() && global_lines.is_empty() {
+        return "当前账号组未配置快捷指令".to_string();
+    }
+    let mut lines = Vec::new();
+    lines.push("快捷指令列表:".to_string());
+    if review_lines.is_empty() {
+        lines.push("审核快捷指令(0):".to_string());
+        lines.push("（空）".to_string());
+    } else {
+        lines.push(format!("审核快捷指令({}):", review_lines.len()));
+        lines.extend(review_lines);
+    }
+    if global_lines.is_empty() {
+        lines.push("全局快捷指令(0):".to_string());
+        lines.push("（空）".to_string());
+    } else {
+        lines.push(format!("全局快捷指令({}):", global_lines.len()));
+        lines.extend(global_lines);
+    }
+    lines.join("\n")
+}
+
+fn build_shortcut_scope_lines(runtime: &NapCatRuntimeConfig, scope: ShortcutScope) -> Vec<String> {
+    let guard = shortcut_storage(runtime, scope)
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let mut items = guard
+        .iter()
+        .map(|(k, v)| format!("{} = {}", k, v))
+        .collect::<Vec<_>>();
+    items.sort();
+    items
+}
+
 fn build_selfcheck_report(runtime: &NapCatRuntimeConfig, state: &NapCatState) -> String {
     let pending_reviews = state
         .review_info
@@ -3429,6 +3737,16 @@ fn build_selfcheck_report(runtime: &NapCatRuntimeConfig, state: &NapCatState) ->
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .len();
+    let review_shortcuts = runtime
+        .review_shortcuts
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .len();
+    let global_shortcuts = runtime
+        .global_shortcuts
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .len();
     let accounts_cfg = runtime.accounts.len();
     let online_accounts = group_accounts()
         .lock()
@@ -3451,7 +3769,7 @@ fn build_selfcheck_report(runtime: &NapCatRuntimeConfig, state: &NapCatState) ->
     };
 
     format!(
-        "系统自检报告\n组: {}\n审核群: {}\nNapCat: {} (token {})\n账号: 配置 {} 个, 在线 {} 个\n账号列表: {}\n待审核: {}\n待发送: {}\n发送中: {}\n黑名单: {}\n快捷回复: {}\n队列策略: max_post_stack={}",
+        "系统自检报告\n组: {}\n审核群: {}\nNapCat: {} (token {})\n账号: 配置 {} 个, 在线 {} 个\n账号列表: {}\n待审核: {}\n待发送: {}\n发送中: {}\n黑名单: {}\n快捷回复: {}\n审核快捷指令: {}\n全局快捷指令: {}\n队列策略: max_post_stack={}",
         runtime.group_id,
         audit_group,
         ws_base,
@@ -3464,35 +3782,21 @@ fn build_selfcheck_report(runtime: &NapCatRuntimeConfig, state: &NapCatState) ->
         sending,
         blacklist,
         quick_replies,
+        review_shortcuts,
+        global_shortcuts,
         runtime.max_queue
     )
 }
 
 fn quick_reply_key_conflicts(key: &str) -> bool {
-    matches!(
-        key,
-        "是" | "否"
-            | "等"
-            | "删"
-            | "拒"
-            | "立即"
-            | "刷新"
-            | "重渲染"
-            | "消息全选"
-            | "匿"
-            | "扩列审查"
-            | "扩列"
-            | "查"
-            | "查成分"
-            | "展示"
-            | "评论"
-            | "回复"
-            | "合并"
-            | "拉黑"
-    )
+    is_builtin_review_command_name(key)
 }
 
 fn sort_quick_reply_map(map: &mut HashMap<String, String>) {
+    sort_string_map(map);
+}
+
+fn sort_string_map(map: &mut HashMap<String, String>) {
     let mut pairs = map
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -3508,6 +3812,14 @@ fn persist_group_quick_replies(
     group_id: &str,
     quick_replies: &HashMap<String, String>,
 ) -> Result<(), String> {
+    persist_group_string_map(group_id, "quick_replies", quick_replies)
+}
+
+fn persist_group_string_map(
+    group_id: &str,
+    field_name: &str,
+    values: &HashMap<String, String>,
+) -> Result<(), String> {
     let config_path = env::var("OQQWALL_CONFIG").unwrap_or_else(|_| "config.json".to_string());
     let data = fs::read_to_string(&config_path)
         .map_err(|err| format!("读取配置失败 {}: {}", config_path, err))?;
@@ -3517,7 +3829,7 @@ fn persist_group_quick_replies(
         .as_object_mut()
         .ok_or_else(|| "配置根节点必须是对象".to_string())?;
     let mut qr_obj = serde_json::Map::new();
-    let mut entries = quick_replies
+    let mut entries = values
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<Vec<_>>();
@@ -3530,18 +3842,28 @@ fn persist_group_quick_replies(
             .get_mut(group_id)
             .and_then(|v| v.as_object_mut())
             .ok_or_else(|| format!("配置中不存在 groups.{}", group_id))?;
-        group.insert("quick_replies".to_string(), Value::Object(qr_obj));
+        group.insert(field_name.to_string(), Value::Object(qr_obj));
     } else {
         let group = obj
             .get_mut(group_id)
             .and_then(|v| v.as_object_mut())
             .ok_or_else(|| format!("配置中不存在组 {}", group_id))?;
-        group.insert("quick_replies".to_string(), Value::Object(qr_obj));
+        group.insert(field_name.to_string(), Value::Object(qr_obj));
     }
     let mut output =
         serde_json::to_string_pretty(&root).map_err(|err| format!("配置序列化失败: {}", err))?;
     output.push('\n');
     fs::write(&config_path, output).map_err(|err| format!("配置写入失败: {}", err))
+}
+
+fn shortcut_storage<'a>(
+    runtime: &'a NapCatRuntimeConfig,
+    scope: ShortcutScope,
+) -> &'a Arc<std::sync::Mutex<HashMap<String, String>>> {
+    match scope {
+        ShortcutScope::Review => &runtime.review_shortcuts,
+        ShortcutScope::Global => &runtime.global_shortcuts,
+    }
 }
 
 fn collect_batch_post_ids_for_notify(
@@ -3974,6 +4296,10 @@ const HELP_TEXT: &str = r#"全局指令:
 调出曾经接收到过的投稿
 用法：调出 <review_code>
 
+撤回:
+将暂存区中的稿件撤回到待处理，并重排后续待发送稿件的外部编号
+用法：撤回 <review_code>
+
 信息:
 查询该编号的接收者、发送者、所属组、处理后信息
 用法：信息 <review_code>
@@ -4022,6 +4348,21 @@ const HELP_TEXT: &str = r#"全局指令:
 删除指定快捷回复指令
 用法：快捷回复 删除 指令名
 说明：删除后会写回配置文件
+
+快捷指令:
+查看当前账号组配置的快捷指令列表
+用法：快捷指令
+
+快捷指令 添加:
+添加审核或全局快捷指令
+用法：快捷指令 添加 审核 指令名=步骤1 | 步骤2
+或：快捷指令 添加 全局 指令名=步骤1 | 步骤2
+说明：步骤支持用 | 或换行分隔；审核快捷指令不能与快捷回复重名
+
+快捷指令 删除:
+删除指定审核或全局快捷指令
+用法：快捷指令 删除 审核 指令名
+或：快捷指令 删除 全局 指令名
 
 自检:
 系统与服务自检
@@ -4086,7 +4427,13 @@ const HELP_TEXT: &str = r#"全局指令:
 快捷回复指令:
 使用预设模板向投稿人发送消息
 用法：回复审核消息 <快捷指令名>
-或：@本账号 <review_code> <快捷指令名>"#;
+或：@本账号 <review_code> <快捷指令名>
+
+快捷指令:
+审核快捷指令会优先于内置审核指令；全局快捷指令会优先于内置全局指令
+如需执行被覆盖的原始内置指令，请在指令前加“原始”
+示例：@本账号 123 原始 匿
+示例：@本账号 原始 待处理"#;
 
 fn is_admin_sender(value: &Value) -> bool {
     value
@@ -4095,11 +4442,6 @@ fn is_admin_sender(value: &Value) -> bool {
         .and_then(|role| role.as_str())
         .map(|role| role == "admin" || role == "owner")
         .unwrap_or(false)
-}
-
-fn is_help_command(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed == "帮助" || trimmed.eq_ignore_ascii_case("help")
 }
 
 async fn send_group_text(out_tx: &mpsc::Sender<String>, group_id: &str, text: &str) {
@@ -4200,7 +4542,13 @@ mod tests {
             friend_add_message: None,
             max_queue: 1,
             quick_replies: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            review_shortcuts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            global_shortcuts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    fn parse_cmd(text: &str, has_reply: bool) -> Option<AuditCommand> {
+        parse_audit_command(text, has_reply, &test_runtime())
     }
 
     fn clear_group_accounts_for_test(group_id: &str) {
@@ -4214,39 +4562,43 @@ mod tests {
     #[test]
     fn parse_help_and_review_with_code() {
         assert_eq!(
-            parse_audit_command("帮助", false),
-            Some(AuditCommand::Global(GlobalAction::Help))
+            parse_cmd("帮助", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::Help
+            )))
         );
         assert_eq!(
-            parse_audit_command("help", false),
-            Some(AuditCommand::Global(GlobalAction::Help))
+            parse_cmd("help", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::Help
+            )))
         );
         assert_eq!(
-            parse_audit_command("123 是", false),
+            parse_cmd("123 是", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Approve,
+                action: ParsedReviewAction::Builtin(ReviewAction::Approve),
             })
         );
         assert_eq!(
-            parse_audit_command("123 删", false),
+            parse_cmd("123 删", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Delete,
+                action: ParsedReviewAction::Builtin(ReviewAction::Delete),
             })
         );
         assert_eq!(
-            parse_audit_command("123 拒", false),
+            parse_cmd("123 拒", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Reject,
+                action: ParsedReviewAction::Builtin(ReviewAction::Reject),
             })
         );
         assert_eq!(
-            parse_audit_command("123 合并 456", false),
+            parse_cmd("123 合并 456", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Merge { review_code: 456 },
+                action: ParsedReviewAction::Builtin(ReviewAction::Merge { review_code: 456 }),
             })
         );
     }
@@ -4254,40 +4606,69 @@ mod tests {
     #[test]
     fn parse_global_and_quick_reply_actions() {
         assert_eq!(
-            parse_audit_command("调出 42", false),
-            Some(AuditCommand::Global(GlobalAction::Recall {
-                review_code: 42
-            }))
+            parse_cmd("调出 42", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::Recall { review_code: 42 }
+            )))
         );
         assert_eq!(
-            parse_audit_command("调出 #42", false),
-            Some(AuditCommand::Global(GlobalAction::Recall {
-                review_code: 42
-            }))
+            parse_cmd("调出 #42", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::Recall { review_code: 42 }
+            )))
         );
         assert_eq!(
-            parse_audit_command("清理发送中", false),
-            Some(AuditCommand::Global(GlobalAction::SendInFlightClear))
+            parse_cmd("撤回 42", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::Withdraw { review_code: 42 }
+            )))
         );
         assert_eq!(
-            parse_audit_command("快捷回复 添加 hi=hello", false),
-            Some(AuditCommand::Global(GlobalAction::QuickReplyAdd {
-                key: "hi".to_string(),
-                text: "hello".to_string(),
-            }))
+            parse_cmd("清理发送中", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::SendInFlightClear
+            )))
+        );
+        assert_eq!(
+            parse_cmd("快捷回复 添加 hi=hello", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::QuickReplyAdd {
+                    key: "hi".to_string(),
+                    text: "hello".to_string(),
+                }
+            )))
+        );
+        assert_eq!(
+            parse_cmd("快捷指令 添加 审核 滚=拒 | 拉黑", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::ShortcutAdd {
+                    scope: ShortcutScope::Review,
+                    key: "滚".to_string(),
+                    definition: "拒 | 拉黑".to_string(),
+                }
+            )))
+        );
+        assert_eq!(
+            parse_cmd("快捷指令 删除 全局 待处理", false),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::ShortcutDelete {
+                    scope: ShortcutScope::Global,
+                    key: "待处理".to_string(),
+                }
+            )))
         );
     }
 
     #[test]
     fn parse_quick_reply_requires_reply_context() {
-        assert_eq!(parse_audit_command("谢谢", false), None);
+        assert_eq!(parse_cmd("谢谢", false), None);
         assert_eq!(
-            parse_audit_command("谢谢", true),
+            parse_cmd("谢谢", true),
             Some(AuditCommand::Review {
                 review_code: None,
-                action: ReviewAction::QuickReply {
+                action: ParsedReviewAction::Builtin(ReviewAction::QuickReply {
                     key: "谢谢".to_string(),
-                },
+                }),
             })
         );
     }
@@ -4295,31 +4676,83 @@ mod tests {
     #[test]
     fn parse_reply_text_preserves_spaces() {
         assert_eq!(
-            parse_audit_command("123 回复 hello world", false),
+            parse_cmd("123 回复 hello world", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Reply {
+                action: ParsedReviewAction::Builtin(ReviewAction::Reply {
                     text: "hello world".to_string(),
-                },
+                }),
             })
         );
         assert_eq!(
-            parse_audit_command("123 回复  hello   world", false),
+            parse_cmd("123 回复  hello   world", false),
             Some(AuditCommand::Review {
                 review_code: Some(123),
-                action: ReviewAction::Reply {
+                action: ParsedReviewAction::Builtin(ReviewAction::Reply {
                     text: "hello   world".to_string(),
-                },
+                }),
             })
         );
         assert_eq!(
-            parse_audit_command("回复  你好  世界", true),
+            parse_cmd("回复  你好  世界", true),
             Some(AuditCommand::Review {
                 review_code: None,
-                action: ReviewAction::Reply {
+                action: ParsedReviewAction::Builtin(ReviewAction::Reply {
                     text: "你好  世界".to_string(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_review_shortcuts_override_builtin_and_support_raw_prefix() {
+        let runtime = NapCatRuntimeConfig {
+            review_shortcuts: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "匿".to_string(),
+                "匿 | 是".to_string(),
+            )]))),
+            ..test_runtime()
+        };
+        assert_eq!(
+            parse_audit_command("123 匿", false, &runtime),
+            Some(AuditCommand::Review {
+                review_code: Some(123),
+                action: ParsedReviewAction::Shortcut {
+                    key: "匿".to_string(),
+                    args: String::new(),
                 },
             })
+        );
+        assert_eq!(
+            parse_audit_command("123 原始 匿", false, &runtime),
+            Some(AuditCommand::Review {
+                review_code: Some(123),
+                action: ParsedReviewAction::Builtin(ReviewAction::ToggleAnonymous),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_global_shortcuts_override_builtin_and_expand() {
+        let runtime = NapCatRuntimeConfig {
+            global_shortcuts: Arc::new(std::sync::Mutex::new(HashMap::from([(
+                "待处理".to_string(),
+                "删除待处理 | 删除暂存区".to_string(),
+            )]))),
+            ..test_runtime()
+        };
+        assert_eq!(
+            parse_audit_command("待处理", false, &runtime),
+            Some(AuditCommand::Global(ParsedGlobalAction::Batch(vec![
+                GlobalAction::PendingClear,
+                GlobalAction::SendQueueClear,
+            ])))
+        );
+        assert_eq!(
+            parse_audit_command("原始 待处理", false, &runtime),
+            Some(AuditCommand::Global(ParsedGlobalAction::Builtin(
+                GlobalAction::PendingList
+            )))
         );
     }
 
@@ -4370,20 +4803,20 @@ mod tests {
 
     #[test]
     fn command_context_requires_at_or_bound_reply() {
-        let global = AuditCommand::Global(GlobalAction::Help);
+        let global = AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::Help));
         assert!(command_context_allowed(&global, true, false));
         assert!(!command_context_allowed(&global, false, true));
 
         let review_with_code = AuditCommand::Review {
             review_code: Some(42),
-            action: ReviewAction::Approve,
+            action: ParsedReviewAction::Builtin(ReviewAction::Approve),
         };
         assert!(command_context_allowed(&review_with_code, true, false));
         assert!(!command_context_allowed(&review_with_code, false, true));
 
         let review_reply = AuditCommand::Review {
             review_code: None,
-            action: ReviewAction::Approve,
+            action: ParsedReviewAction::Builtin(ReviewAction::Approve),
         };
         assert!(command_context_allowed(&review_reply, false, true));
         assert!(!command_context_allowed(&review_reply, true, false));
@@ -4482,5 +4915,43 @@ mod tests {
 
         let label = post_batch_label(&state, &[first, second]);
         assert_eq!(label, "#1193/102,#1094/103");
+    }
+
+    #[test]
+    fn validate_withdraw_requires_queued_post_with_external_code() {
+        let review_id = ReviewId::from_u128(10);
+        let post_id = PostId::from_u128(20);
+        let mut state = NapCatState::default();
+        state.review_by_code.insert(42, review_id);
+        state.review_info.insert(
+            review_id,
+            ReviewInfo {
+                review_code: 42,
+                post_id,
+                group_id: "group-a".to_string(),
+            },
+        );
+
+        assert_eq!(
+            validate_withdraw_action(&state, "group-a", 42),
+            Err("该稿件不在暂存区")
+        );
+
+        state.send_plans.insert(
+            post_id,
+            SendPlanInfo {
+                group_id: "group-a".to_string(),
+                not_before_ms: 0,
+                priority: SendPriority::Normal,
+                seq: 1,
+            },
+        );
+        assert_eq!(
+            validate_withdraw_action(&state, "group-a", 42),
+            Err("该稿件缺少外部编号")
+        );
+
+        state.post_external_code.insert(post_id, 1001);
+        assert_eq!(validate_withdraw_action(&state, "group-a", 42), Ok(()));
     }
 }

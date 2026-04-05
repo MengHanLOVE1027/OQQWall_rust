@@ -263,6 +263,9 @@ pub enum ReviewEvent {
         group_id: GroupId,
         next_number: ExternalCode,
     },
+    ReviewExternalCodeCleared {
+        post_id: PostId,
+    },
     ReviewExternalCodeAssigned {
         post_id: PostId,
         group_id: GroupId,

@@ -10,8 +10,8 @@ pub mod safety;
 pub mod state;
 
 pub use command::{
-    Command, GlobalAction, GlobalActionCommand, IngressCommand, ReviewAction, ReviewActionCommand,
-    TickCommand,
+    Command, GlobalAction, GlobalActionBatchCommand, GlobalActionCommand, IngressCommand,
+    ReviewAction, ReviewActionBatchCommand, ReviewActionCommand, ShortcutScope, TickCommand,
 };
 pub use config::{CoreConfig, GroupConfig, TimeWindow};
 pub use decide::builder::build_draft_from_messages;

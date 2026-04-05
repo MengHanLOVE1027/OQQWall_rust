@@ -1,12 +1,12 @@
-use crate::command::{GlobalAction, GlobalActionCommand};
+use crate::command::{GlobalAction, GlobalActionBatchCommand, GlobalActionCommand};
 use crate::config::CoreConfig;
 use crate::decide::flush::build_group_flush_events;
 use crate::decide::scheduler::{day_index, minute_of_day};
 use crate::event::{
-    Event, GroupFlushReason, RenderEvent, ReviewDecision, ReviewEvent, ScheduleEvent, SendEvent,
-    SendPriority,
+    Event, EventEnvelope, GroupFlushReason, RenderEvent, ReviewDecision, ReviewEvent,
+    ScheduleEvent, SendEvent, SendPriority,
 };
-use crate::ids::ExternalCode;
+use crate::ids::{ActorId, ExternalCode, Id128};
 use crate::state::StateView;
 
 pub fn decide_global_action(
@@ -129,6 +129,7 @@ pub fn decide_global_action(
                 }),
             ]
         }
+        GlobalAction::Withdraw { review_code } => build_withdraw_events(state, cmd, *review_code),
         GlobalAction::SetExternalNumber { value } => {
             vec![Event::Review(ReviewEvent::ReviewExternalNumberSet {
                 group_id: cmd.group_id.clone(),
@@ -152,6 +153,41 @@ pub fn decide_global_action(
     }
 }
 
+pub fn decide_global_action_batch(
+    state: &StateView,
+    cmd: &GlobalActionBatchCommand,
+    config: &CoreConfig,
+) -> Vec<Event> {
+    let mut scratch = state.clone();
+    let mut out = Vec::new();
+    let mut env_id = 1u128;
+    for action in &cmd.actions {
+        let step_cmd = GlobalActionCommand {
+            group_id: cmd.group_id.clone(),
+            action: action.clone(),
+            operator_id: cmd.operator_id.clone(),
+            now_ms: cmd.now_ms,
+            tz_offset_minutes: cmd.tz_offset_minutes,
+        };
+        let step_events = decide_global_action(&scratch, &step_cmd, config);
+        if step_events.is_empty() {
+            break;
+        }
+        for event in &step_events {
+            scratch = scratch.reduce(&EventEnvelope {
+                id: Id128(env_id),
+                ts_ms: cmd.now_ms,
+                actor: ActorId::from_u128(0),
+                correlation_id: None,
+                event: event.clone(),
+            });
+            env_id = env_id.saturating_add(1);
+        }
+        out.extend(step_events);
+    }
+    out
+}
+
 fn maybe_assign_external_code(
     state: &StateView,
     next_by_group: &mut std::collections::HashMap<String, ExternalCode>,
@@ -168,4 +204,84 @@ fn maybe_assign_external_code(
         group_id: group_id.to_string(),
         external_code: next_code,
     }))
+}
+
+fn build_withdraw_events(
+    state: &StateView,
+    cmd: &GlobalActionCommand,
+    review_code: crate::ids::ReviewCode,
+) -> Vec<Event> {
+    let Some(review_id) = state.review_by_code.get(&review_code).copied() else {
+        return Vec::new();
+    };
+    let Some(review) = state.reviews.get(&review_id) else {
+        return Vec::new();
+    };
+    let post_id = review.post_id;
+    let Some(post_meta) = state.posts.get(&post_id) else {
+        return Vec::new();
+    };
+    if post_meta.group_id != cmd.group_id {
+        return Vec::new();
+    }
+    let Some(plan) = state.send_plans.get(&post_id) else {
+        return Vec::new();
+    };
+    if plan.group_id != cmd.group_id {
+        return Vec::new();
+    }
+    let Some(recalled_code) = state.external_code_by_post.get(&post_id).copied() else {
+        return Vec::new();
+    };
+
+    let mut events = vec![
+        Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }),
+        Event::Review(ReviewEvent::ReviewDecisionRecorded {
+            review_id,
+            decision: ReviewDecision::Deferred,
+            decided_by: cmd.operator_id.clone(),
+            decided_at_ms: cmd.now_ms,
+        }),
+        Event::Review(ReviewEvent::ReviewExternalCodeCleared { post_id }),
+    ];
+
+    let mut affected = state
+        .send_plans
+        .iter()
+        .filter_map(|(queued_post_id, queued_plan)| {
+            if *queued_post_id == post_id || queued_plan.group_id != cmd.group_id {
+                return None;
+            }
+            let external_code = state.external_code_by_post.get(queued_post_id).copied()?;
+            (external_code > recalled_code).then_some((external_code, *queued_post_id))
+        })
+        .collect::<Vec<_>>();
+    affected.sort_by(|a, b| (a.0, a.1.0).cmp(&(b.0, b.1.0)));
+    for (external_code, queued_post_id) in affected {
+        events.push(Event::Review(ReviewEvent::ReviewExternalCodeAssigned {
+            post_id: queued_post_id,
+            group_id: cmd.group_id.clone(),
+            external_code: external_code.saturating_sub(1),
+        }));
+    }
+
+    let current_next = state
+        .next_external_code_by_group
+        .get(&cmd.group_id)
+        .copied()
+        .unwrap_or_else(|| recalled_code.saturating_add(1));
+    events.push(Event::Review(ReviewEvent::ReviewExternalNumberSet {
+        group_id: cmd.group_id.clone(),
+        next_number: current_next.saturating_sub(1).max(1),
+    }));
+    events.push(Event::Review(ReviewEvent::ReviewInfoSynced {
+        review_id,
+        post_id,
+        review_code,
+    }));
+    events.push(Event::Review(ReviewEvent::ReviewPublishRequested {
+        review_id,
+    }));
+
+    events
 }

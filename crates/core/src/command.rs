@@ -7,7 +7,9 @@ pub enum Command {
     Ingress(IngressCommand),
     Tick(TickCommand),
     ReviewAction(ReviewActionCommand),
+    ReviewActionBatch(ReviewActionBatchCommand),
     GlobalAction(GlobalActionCommand),
+    GlobalActionBatch(GlobalActionBatchCommand),
     DriverEvent(Event),
 }
 
@@ -41,6 +43,17 @@ pub struct ReviewActionCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewActionBatchCommand {
+    pub review_id: Option<ReviewId>,
+    pub review_code: Option<ReviewCode>,
+    pub audit_msg_id: Option<AuditMsgId>,
+    pub actions: Vec<ReviewAction>,
+    pub operator_id: String,
+    pub now_ms: TimestampMs,
+    pub tz_offset_minutes: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewAction {
     Approve,
     Reject,
@@ -61,6 +74,12 @@ pub enum ReviewAction {
     Merge { review_code: ReviewCode },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutScope {
+    Review,
+    Global,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalActionCommand {
     pub group_id: GroupId,
@@ -71,9 +90,21 @@ pub struct GlobalActionCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalActionBatchCommand {
+    pub group_id: GroupId,
+    pub actions: Vec<GlobalAction>,
+    pub operator_id: String,
+    pub now_ms: TimestampMs,
+    pub tz_offset_minutes: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlobalAction {
     Help,
     Recall {
+        review_code: ReviewCode,
+    },
+    Withdraw {
         review_code: ReviewCode,
     },
     Info {
@@ -103,6 +134,16 @@ pub enum GlobalAction {
         text: String,
     },
     QuickReplyDelete {
+        key: String,
+    },
+    ShortcutList,
+    ShortcutAdd {
+        scope: ShortcutScope,
+        key: String,
+        definition: String,
+    },
+    ShortcutDelete {
+        scope: ShortcutScope,
         key: String,
     },
     SelfCheck,

@@ -136,11 +136,23 @@
 | watermark_text            |                     string | 默认 ""            | 已支持                   | 用于渲染水印文本（空字符串不绘制水印）                                    |
 | friend_add_message        |                     string | 默认 ""            | 已支持                   | 用于自动通过好友申请后发送文本（你样例包含）                                        |
 | quick_replies             |     object{string->string} | 默认 {}            | 已支持                   | 用于快捷回复（键和值均为非空字符串，且键不能与审核指令冲突）              |
+| review_shortcuts         |     object{string->string} | 默认 {}            | 已支持                   | 审核快捷指令映射；步骤 DSL 用 `|`/换行分隔，可覆盖内置审核指令，且不能与 `quick_replies` 重名 |
+| global_shortcuts         |     object{string->string} | 默认 {}            | 已支持                   | 全局快捷指令映射；步骤 DSL 用 `|`/换行分隔，可覆盖内置全局指令                        |
 | webview_admins           | array[{username,password,role}] | 默认 []            | 已支持                   | WebView 组管理员；`role` 缺省为 `group_admin`，密码会归一化为 `sha256:` |
 
 > 反向 WS 连接格式：NapCat 里填写 `ws://<host>/<base_path>/<QQ号>`，其中 `<base_path>` 来自 `napcat_base_url`（示例：`ws://127.0.0.1:3001/oqqwall/ws/456787654`）。
 
-### 4.2 send_schedule 的语义（必须写清楚）
+### 4.2 快捷指令 DSL 规则
+
+* `review_shortcuts` / `global_shortcuts` 的 value 都是单行 DSL。
+* 步骤用 `|` 或换行分隔，例如：`匿 | 是`、`拒 | 拉黑 广告`.
+* 快捷指令名不能为空、不能包含空白、不能命名为 `原始`。
+* 审核快捷指令步骤只允许原始内置审核指令；全局快捷指令步骤只允许原始内置全局指令中的可批处理动作。
+* 审核快捷指令支持 `{args}`、`{review_code}`、`{sender_id}`、`{group_id}`。
+* 全局快捷指令支持 `{args}`、`{group_id}`；不支持 `{review_code}` / `{sender_id}`。
+* 快捷指令可以覆盖同作用域内置指令；若要调用被覆盖的内置指令，群内输入时使用 `原始 <指令>`。
+* 快捷指令不会递归调用其他快捷指令；运行时会顺序执行，某一步无效就停止后续步骤。
+### 4.3 send_schedule 的语义（必须写清楚）
 
 * `send_schedule` 是一组 **每日 HH:MM** 时间点（例如 `"15:05"`、`"23:55"`）
 * sendcontrol 的 scheduler 每分钟 tick，一旦当前 `nowHM == HH:MM` 则触发 `flush_staged_posts`，并创建当日 markfile，保证**同日同时间只触发一次**。
@@ -249,6 +261,16 @@ Rust 版落地建议：
       "max_image_number_one_post": 9,
       "send_schedule": ["15:05", "23:55"],
       "friend_add_message": "您的好友申请已通过，请阅读校园墙空间置顶后再投稿（系统自动发送请勿回复）",
+      "quick_replies": {
+        "补充信息": "请补充时间地点"
+      },
+      "review_shortcuts": {
+        "匿": "匿 | 是",
+        "滚": "拒 | 拉黑 {group_id}"
+      },
+      "global_shortcuts": {
+        "清队列": "删除待处理 | 删除暂存区"
+      },
       "webview_admins": [
         { "username": "3391146750", "password": "sha256:REDACTED", "role": "group_admin" }
       ]

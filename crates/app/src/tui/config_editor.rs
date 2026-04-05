@@ -12,6 +12,11 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json::{Map, Value};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use oqqwall_rust_drivers::shortcut::{
+    is_builtin_review_command_name, validate_global_shortcut_definition,
+    validate_review_shortcut_definition, validate_shortcut_name,
+};
+
 #[derive(Clone, Copy)]
 enum FieldKind {
     Text,
@@ -284,6 +289,18 @@ const GROUP_FIELDS: &[FieldSpec] = &[
         key: "quick_replies",
         kind: FieldKind::MapList,
         hint: "Quick replies map (command -> reply)",
+        aliases: &[],
+    },
+    FieldSpec {
+        key: "review_shortcuts",
+        kind: FieldKind::MapList,
+        hint: "Review shortcuts map (command -> steps)",
+        aliases: &[],
+    },
+    FieldSpec {
+        key: "global_shortcuts",
+        kind: FieldKind::MapList,
+        hint: "Global shortcuts map (command -> steps)",
         aliases: &[],
     },
     FieldSpec {
@@ -2074,6 +2091,28 @@ impl ConfigEditor {
                 }
             }
 
+            if let Some(value) = obj.get("review_shortcuts") {
+                validate_shortcut_entries(
+                    group,
+                    "review_shortcuts",
+                    value,
+                    &mut errors,
+                    validate_review_shortcut_definition,
+                    obj.get("quick_replies").and_then(|v| v.as_object()),
+                );
+            }
+
+            if let Some(value) = obj.get("global_shortcuts") {
+                validate_shortcut_entries(
+                    group,
+                    "global_shortcuts",
+                    value,
+                    &mut errors,
+                    validate_global_shortcut_definition,
+                    None,
+                );
+            }
+
             let admins = extract_admin_list(resolve_value(
                 obj,
                 &FieldSpec {
@@ -2742,6 +2781,8 @@ fn default_group_config_template() -> Map<String, Value> {
     map.insert("individual_image_in_posts".to_string(), Value::Bool(true));
     map.insert("watermark_text".to_string(), Value::String(String::new()));
     map.insert("quick_replies".to_string(), Value::Object(Map::new()));
+    map.insert("review_shortcuts".to_string(), Value::Object(Map::new()));
+    map.insert("global_shortcuts".to_string(), Value::Object(Map::new()));
     map.insert("send_schedule".to_string(), Value::Array(Vec::new()));
     map
 }
@@ -2964,6 +3005,8 @@ fn field_summary_text(spec: FieldSpec) -> &'static str {
         "individual_image_in_posts" => "发件时同时发原图",
         "watermark_text" => "渲染水印文本",
         "quick_replies" => "快捷回复映射",
+        "review_shortcuts" => "审核快捷指令映射",
+        "global_shortcuts" => "全局快捷指令映射",
         _ => spec.hint,
     }
 }
@@ -2989,6 +3032,8 @@ fn field_detail_text(spec: FieldSpec) -> String {
         "mangroupid" => "审核群号（数字）。审核指令通常只在该群内生效。".to_string(),
         "send_schedule" => "每天定时触发发送，格式 HH:MM，例如 [\"08:30\",\"22:10\"]。".to_string(),
         "quick_replies" => "快捷回复映射（指令 -> 文本）。避免与审核指令（是/否/删等）重名。".to_string(),
+        "review_shortcuts" => "审核快捷指令映射（指令 -> 步骤 DSL）。支持覆盖内置审核指令，步骤用 | 分隔，例如“匿 | 是”；不能与 quick_replies 重名。".to_string(),
+        "global_shortcuts" => "全局快捷指令映射（指令 -> 步骤 DSL）。支持覆盖内置全局指令，步骤用 | 分隔；首版仅支持会生成后端事件的全局动作。".to_string(),
         "individual_image_in_posts" => "开启后发送时会附带原图；关闭则更偏向仅发送渲染结果。".to_string(),
         "napcat_base_url" => "NapCat 反向 WS 基础地址，支持组覆盖。示例：0.0.0.0:3001/oqqwall/ws".to_string(),
         "napcat_access_token" => "NapCat access_token。建议使用环境变量 OQQWALL_NAPCAT_TOKEN 统一覆盖。".to_string(),
@@ -3091,27 +3136,53 @@ fn extract_map_list(value: Option<&Value>) -> Vec<(String, String)> {
 }
 
 fn quick_reply_conflicts_with_review_command(key: &str) -> bool {
-    matches!(
-        key,
-        "是" | "否"
-            | "等"
-            | "删"
-            | "拒"
-            | "立即"
-            | "刷新"
-            | "重渲染"
-            | "消息全选"
-            | "匿"
-            | "扩列审查"
-            | "扩列"
-            | "查"
-            | "查成分"
-            | "展示"
-            | "评论"
-            | "回复"
-            | "合并"
-            | "拉黑"
-    )
+    is_builtin_review_command_name(key)
+}
+
+fn validate_shortcut_entries(
+    group: &str,
+    field: &str,
+    value: &Value,
+    errors: &mut Vec<String>,
+    validate_definition: fn(&str) -> Result<(), String>,
+    quick_replies: Option<&Map<String, Value>>,
+) {
+    match value {
+        Value::Object(entries) => {
+            for (cmd, content) in entries {
+                let key = match validate_shortcut_name(cmd) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        errors.push(format!("{group}: {field}[{cmd}] 指令名无效: {err}"));
+                        continue;
+                    }
+                };
+                if quick_replies
+                    .map(|entries| entries.contains_key(&key))
+                    .unwrap_or(false)
+                {
+                    errors.push(format!("{group}: {field} 指令 {key} 与 quick_replies 冲突"));
+                }
+                match content {
+                    Value::String(text) if !text.trim().is_empty() => {
+                        if let Err(err) = validate_definition(text.trim()) {
+                            errors.push(format!("{group}: {field}[{key}] 定义无效: {err}"));
+                        }
+                    }
+                    Value::String(_) => {
+                        errors.push(format!("{group}: {field}[{key}] 内容不能为空"));
+                    }
+                    _ => {
+                        errors.push(format!("{group}: {field}[{key}] 必须是字符串"));
+                    }
+                }
+            }
+        }
+        Value::Null => {}
+        _ => {
+            errors.push(format!("{group}: {field} 必须是对象"));
+        }
+    }
 }
 
 fn extract_admin_list(value: Option<&Value>) -> Vec<(String, String, String)> {

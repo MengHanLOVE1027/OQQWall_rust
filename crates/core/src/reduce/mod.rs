@@ -469,6 +469,9 @@ fn reduce_review(state: &mut StateView, event: &ReviewEvent) {
                 .next_external_code_by_group
                 .insert(group_id.clone(), *next_number);
         }
+        ReviewEvent::ReviewExternalCodeCleared { post_id } => {
+            state.external_code_by_post.remove(post_id);
+        }
         ReviewEvent::ReviewExternalCodeAssigned {
             post_id,
             group_id,

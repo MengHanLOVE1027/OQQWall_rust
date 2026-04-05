@@ -1,15 +1,15 @@
 use crate::anonymous::detect_anonymous;
-use crate::command::{ReviewAction, ReviewActionCommand};
+use crate::command::{ReviewAction, ReviewActionBatchCommand, ReviewActionCommand};
 use crate::config::CoreConfig;
 use crate::decide::builder::build_draft_from_messages;
 use crate::decide::flush::build_group_flush_events;
 use crate::decide::scheduler::{compute_not_before, day_index, minute_of_day};
 use crate::draft::MediaKind;
 use crate::event::{
-    DraftEvent, Event, IngressEvent, RenderEvent, ReviewDecision, ReviewEvent, ScheduleEvent,
-    SendPriority,
+    DraftEvent, Event, EventEnvelope, IngressEvent, RenderEvent, ReviewDecision, ReviewEvent,
+    ScheduleEvent, SendPriority,
 };
-use crate::ids::{ExternalCode, IngressId, PostId, ReviewCode, ReviewId};
+use crate::ids::{ActorId, ExternalCode, Id128, IngressId, PostId, ReviewCode, ReviewId};
 use crate::safety::detect_safe;
 use crate::state::StateView;
 
@@ -178,6 +178,43 @@ pub fn decide_review_action(
             build_merge_events(state, cmd, review_id, *review_code)
         }
     }
+}
+
+pub fn decide_review_action_batch(
+    state: &StateView,
+    cmd: &ReviewActionBatchCommand,
+    config: &CoreConfig,
+) -> Vec<Event> {
+    let mut scratch = state.clone();
+    let mut out = Vec::new();
+    let mut env_id = 1u128;
+    for action in &cmd.actions {
+        let step_cmd = ReviewActionCommand {
+            review_id: cmd.review_id,
+            review_code: cmd.review_code,
+            audit_msg_id: cmd.audit_msg_id.clone(),
+            action: action.clone(),
+            operator_id: cmd.operator_id.clone(),
+            now_ms: cmd.now_ms,
+            tz_offset_minutes: cmd.tz_offset_minutes,
+        };
+        let step_events = decide_review_action(&scratch, &step_cmd, config);
+        if step_events.is_empty() {
+            break;
+        }
+        for event in &step_events {
+            scratch = scratch.reduce(&EventEnvelope {
+                id: Id128(env_id),
+                ts_ms: cmd.now_ms,
+                actor: ActorId::from_u128(0),
+                correlation_id: None,
+                event: event.clone(),
+            });
+            env_id = env_id.saturating_add(1);
+        }
+        out.extend(step_events);
+    }
+    out
 }
 
 fn build_approve_events(

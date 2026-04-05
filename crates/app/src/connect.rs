@@ -49,6 +49,8 @@ pub fn spawn_napcat_drivers(handle: &EngineHandle, config: &AppConfig) -> Result
             friend_add_message: group.friend_add_message.clone(),
             max_queue: core_config.max_queue(&group.group_id),
             quick_replies: Arc::new(Mutex::new(group.quick_replies.clone())),
+            review_shortcuts: Arc::new(Mutex::new(group.review_shortcuts.clone())),
+            global_shortcuts: Arc::new(Mutex::new(group.global_shortcuts.clone())),
         };
         let _ws_log = base_url_for_log(&runtime.napcat.base_url);
         debug_log!(

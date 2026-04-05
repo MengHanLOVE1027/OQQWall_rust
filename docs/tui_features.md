@@ -65,6 +65,11 @@
 快捷回复：
 - `quick_replies` 以 “指令 -> 文本” 列表维护，支持新增与删除。
 
+快捷指令：
+- `review_shortcuts` 以 “指令 -> 步骤 DSL” 列表维护，支持新增与删除。
+- `global_shortcuts` 以 “指令 -> 步骤 DSL” 列表维护，支持新增与删除。
+- DSL 步骤支持 `|` 分隔，例如 `匿 | 是`。
+
 网页审核管理员：
 - `admins` 以用户名/密码列表维护，支持新增与删除。
 - 允许 `sha256:` 前缀的密码格式。
@@ -81,9 +86,12 @@
 - `friend_add_message` / `watermark_text` 若存在必须为字符串。
 - `send_schedule` 必须为数组且时间格式为 HH:MM。
 - `quick_replies` 必须为对象，键/值为字符串，内容不能为空，且不能与审核指令冲突（如“是/否/删/拒”等）。
+- `review_shortcuts` / `global_shortcuts` 必须为对象，键不能包含空白、不能是 `原始`。
+- `review_shortcuts` 的键不能与 `quick_replies` 重名。
+- 快捷指令 DSL 必须能解析成至少一个对应作用域的原始内置步骤；非法占位符会阻止保存。
 
 ### 保存输出
-- 写回 JSON 时按固定键顺序输出，并对 `quick_replies` 的键排序。
+- 写回 JSON 时按固定键顺序输出，并对 `quick_replies`、`review_shortcuts`、`global_shortcuts` 的键排序。
 - 组本身按组名排序写回。
 
 ## Log 页面

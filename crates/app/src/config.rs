@@ -6,6 +6,10 @@ use std::path::PathBuf;
 
 use oqqwall_rust_core::{CoreConfig, GroupConfig};
 use oqqwall_rust_drivers::napcat::NapCatConfig;
+use oqqwall_rust_drivers::shortcut::{
+    is_builtin_review_command_name, validate_global_shortcut_definition,
+    validate_review_shortcut_definition, validate_shortcut_name,
+};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -45,6 +49,8 @@ pub struct AppGroupConfig {
     pub individual_image_in_posts: bool,
     pub watermark_text: Option<String>,
     pub quick_replies: HashMap<String, String>,
+    pub review_shortcuts: HashMap<String, String>,
+    pub global_shortcuts: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +269,11 @@ impl AppConfig {
             let watermark_text = nonempty(parse_string(group_value.get("watermark_text")));
             let quick_replies = parse_quick_replies(group_value.get("quick_replies"))
                 .map_err(|err| format!("group {}: {}", group_id, err))?;
+            let review_shortcuts =
+                parse_review_shortcuts(group_value.get("review_shortcuts"), &quick_replies)
+                    .map_err(|err| format!("group {}: {}", group_id, err))?;
+            let global_shortcuts = parse_global_shortcuts(group_value.get("global_shortcuts"))
+                .map_err(|err| format!("group {}: {}", group_id, err))?;
             let _napcat_ws_log = base_url_for_log(&napcat.base_url);
             debug_log!(
                 "config group: group_id={} audit_group_id={:?} napcat_base_url={} napcat_token_present={}",
@@ -280,6 +291,8 @@ impl AppConfig {
                 individual_image_in_posts,
                 watermark_text,
                 quick_replies,
+                review_shortcuts,
+                global_shortcuts,
             });
             for admin in parse_admin_entries(group_value.get("webview_admins")) {
                 let username = admin.username.trim().to_string();
@@ -310,6 +323,8 @@ impl AppConfig {
                 individual_image_in_posts: true,
                 watermark_text: None,
                 quick_replies: HashMap::new(),
+                review_shortcuts: HashMap::new(),
+                global_shortcuts: HashMap::new(),
             });
         }
         #[cfg(debug_assertions)]
@@ -899,7 +914,7 @@ fn parse_quick_replies(value: Option<&Value>) -> Result<HashMap<String, String>,
         if key.is_empty() {
             return Err("quick_replies contains empty key".to_string());
         }
-        if quick_reply_conflicts_with_review_command(key) {
+        if is_builtin_review_command_name(key) {
             return Err(format!(
                 "quick_replies key '{}' conflicts with review command",
                 key
@@ -923,28 +938,63 @@ fn parse_quick_replies(value: Option<&Value>) -> Result<HashMap<String, String>,
     Ok(out)
 }
 
-fn quick_reply_conflicts_with_review_command(key: &str) -> bool {
-    matches!(
-        key,
-        "是" | "否"
-            | "等"
-            | "删"
-            | "拒"
-            | "立即"
-            | "刷新"
-            | "重渲染"
-            | "消息全选"
-            | "匿"
-            | "扩列审查"
-            | "扩列"
-            | "查"
-            | "查成分"
-            | "展示"
-            | "评论"
-            | "回复"
-            | "合并"
-            | "拉黑"
+fn parse_review_shortcuts(
+    value: Option<&Value>,
+    quick_replies: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    parse_shortcut_map(
+        value,
+        validate_review_shortcut_definition,
+        Some(quick_replies),
     )
+}
+
+fn parse_global_shortcuts(value: Option<&Value>) -> Result<HashMap<String, String>, String> {
+    parse_shortcut_map(value, validate_global_shortcut_definition, None)
+}
+
+fn parse_shortcut_map(
+    value: Option<&Value>,
+    validate_definition: fn(&str) -> Result<(), String>,
+    quick_replies: Option<&HashMap<String, String>>,
+) -> Result<HashMap<String, String>, String> {
+    let Some(value) = value else {
+        return Ok(HashMap::new());
+    };
+    let Value::Object(map) = value else {
+        return Err("shortcut map must be an object".to_string());
+    };
+    let mut out = HashMap::new();
+    for (raw_key, raw_value) in map {
+        let key = validate_shortcut_name(raw_key)
+            .map_err(|err| format!("shortcut '{}': {}", raw_key, err))?;
+        if quick_replies
+            .map(|entries| entries.contains_key(&key))
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "review_shortcuts key '{}' conflicts with quick_replies",
+                key
+            ));
+        }
+        let Some(value_text) = parse_string(Some(raw_value)) else {
+            return Err(format!(
+                "shortcut['{}'] must be string",
+                raw_key.replace('\'', "\\'")
+            ));
+        };
+        let value_text = value_text.trim();
+        if value_text.is_empty() {
+            return Err(format!(
+                "shortcut['{}'] must not be empty",
+                raw_key.replace('\'', "\\'")
+            ));
+        }
+        validate_definition(value_text)
+            .map_err(|err| format!("shortcut '{}': {}", raw_key, err))?;
+        out.insert(key, value_text.to_string());
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -1186,6 +1236,37 @@ mod tests {
         });
         let err = parse_quick_replies(Some(&value)).expect_err("should fail");
         assert!(err.contains("conflicts"));
+    }
+
+    #[test]
+    fn parse_review_shortcuts_accepts_valid_definition() {
+        let value = json!({
+            "匿": "匿 | 是",
+            "滚": "拒 | 拉黑 {group_id}"
+        });
+        let parsed = parse_review_shortcuts(Some(&value), &HashMap::new()).expect("shortcuts");
+        assert_eq!(parsed.get("匿"), Some(&"匿 | 是".to_string()));
+        assert_eq!(parsed.get("滚"), Some(&"拒 | 拉黑 {group_id}".to_string()));
+    }
+
+    #[test]
+    fn parse_review_shortcuts_rejects_quick_reply_conflict() {
+        let value = json!({
+            "模板": "匿 | 是"
+        });
+        let mut quick_replies = HashMap::new();
+        quick_replies.insert("模板".to_string(), "hello".to_string());
+        let err = parse_review_shortcuts(Some(&value), &quick_replies).expect_err("should fail");
+        assert!(err.contains("quick_replies"));
+    }
+
+    #[test]
+    fn parse_global_shortcuts_rejects_review_placeholders() {
+        let value = json!({
+            "撤": "撤回 {review_code}"
+        });
+        let err = parse_global_shortcuts(Some(&value)).expect_err("should fail");
+        assert!(err.contains("{review_code}"));
     }
 
     #[test]
