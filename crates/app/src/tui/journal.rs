@@ -1916,6 +1916,10 @@ fn summary_parts(event: &Event) -> (&'static str, String) {
                 "Review.ExternalNumberSet",
                 format!("group={} next={}", group_id, next_number),
             ),
+            ReviewEvent::ReviewExternalCodeCleared { post_id } => (
+                "Review.ExternalCodeCleared",
+                format!("post={}", short_id(*post_id)),
+            ),
             ReviewEvent::ReviewExternalCodeAssigned {
                 post_id,
                 group_id,

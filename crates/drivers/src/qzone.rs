@@ -416,6 +416,10 @@ pub fn spawn_qzone_sender(
                     let mut guard = state.lock().await;
                     guard.external_codes.insert(post_id, external_code);
                 }
+                Event::Review(ReviewEvent::ReviewExternalCodeCleared { post_id }) => {
+                    let mut guard = state.lock().await;
+                    guard.external_codes.remove(&post_id);
+                }
                 Event::Schedule(ScheduleEvent::SendPlanCreated {
                     post_id,
                     group_id,
