@@ -55,6 +55,7 @@ const EMOTION_PUBLISH_URL: &str =
 const UPLOAD_IMAGE_URL: &str = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image";
 const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.1.3702.40 Safari/537.36 QBWebViewUA/2 QBWebViewType/1 WKType/1";
 const MAX_UPLOAD_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const ERROR_BODY_PREVIEW_CHARS: usize = 512;
 const PRESERVE_MAX_LONG_EDGE_1080P: u32 = 1920;
 const PRESERVE_MAX_SHORT_EDGE_1080P: u32 = 1080;
 const JPEG_MIN_DIMENSION: u32 = 512;
@@ -1864,10 +1865,29 @@ fn now_ms() -> i64 {
 }
 
 fn classify_reqwest_error(context: &str, err: reqwest::Error) -> QzoneError {
-    if err.is_timeout() || err.is_connect() {
-        return QzoneError::network(format!("{}: {}", context, err));
+    let status = err.status().map(|status| status.as_u16());
+    let url = err.url().map(|url| url.to_string());
+    let mut message = format!("{}: {}", context, err);
+    let has_status = status.is_some();
+    let status_text = status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    message.push_str(&format!("; status={}", status_text));
+    if let Some(url) = url {
+        if !message.contains(url.as_str()) {
+            message.push_str(&format!("; url={}", url));
+        }
     }
-    QzoneError::network(format!("{}: {}", context, err))
+    let body_text = if has_status {
+        "<unavailable from reqwest transport error>"
+    } else {
+        "<no response>"
+    };
+    message.push_str(&format!("; body={}", body_text));
+    if err.is_timeout() || err.is_connect() {
+        return QzoneError::network(message);
+    }
+    QzoneError::network(message)
 }
 
 fn classify_http_status(context: &str, status: u16) -> QzoneError {
@@ -1881,14 +1901,51 @@ fn classify_http_status(context: &str, status: u16) -> QzoneError {
 }
 
 fn classify_http_status_with_body(context: &str, status: u16, body: &str) -> QzoneError {
-    let mut err = classify_http_status(context, status);
-    let body = if body.trim().is_empty() {
-        "<empty>"
+    with_response_body(classify_http_status(context, status), body)
+}
+
+fn summarize_response_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+    let total_chars = trimmed.chars().count();
+    let preview: String = trimmed.chars().take(ERROR_BODY_PREVIEW_CHARS).collect();
+    if total_chars > ERROR_BODY_PREVIEW_CHARS {
+        format!("{}...(truncated, {} chars total)", preview, total_chars)
     } else {
-        body
-    };
-    err.message = format!("{}; body={}", err.message, body);
+        preview
+    }
+}
+
+fn with_response_body(mut err: QzoneError, body: &str) -> QzoneError {
+    err.message = format!("{}; body={}", err.message, summarize_response_body(body));
     err
+}
+
+fn with_response_code_and_body(
+    mut err: QzoneError,
+    code_label: &str,
+    code: impl std::fmt::Display,
+    body: &str,
+) -> QzoneError {
+    err.message = format!(
+        "{}; {}={}; body={}",
+        err.message,
+        code_label,
+        code,
+        summarize_response_body(body)
+    );
+    err
+}
+
+fn classify_json_response_error(code: i64, message: &str, json: &Value) -> QzoneError {
+    with_response_code_and_body(
+        classify_text_error(message),
+        "code",
+        code,
+        &json.to_string(),
+    )
 }
 
 fn debug_log_http_failure(
@@ -2019,7 +2076,7 @@ fn classify_response_error(json: &Value) -> Option<QzoneError> {
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("qzone error");
-            return Some(classify_text_error(message));
+            return Some(classify_json_response_error(ret, message, json));
         }
     }
     None
@@ -2364,7 +2421,7 @@ fn get_picbo_and_richval(upload: &Value) -> Result<(String, String), QzoneError>
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("upload image failed");
-        return Err(classify_text_error(message));
+        return Err(classify_json_response_error(ret, message, upload));
     }
     let data = upload
         .get("data")
@@ -2425,6 +2482,7 @@ fn field_to_string(data: &Value, key: &str) -> Result<String, QzoneError> {
 mod tests {
     use super::*;
     use image::{Delay, Frame as ImageFrame, Rgba, RgbaImage};
+    use serde_json::json;
 
     #[test]
     fn small_image_keeps_original_bytes() {
@@ -2489,6 +2547,21 @@ mod tests {
         );
         assert!(prepared.bytes.len() <= MAX_UPLOAD_IMAGE_BYTES);
         assert!(is_gif(&prepared.bytes));
+    }
+
+    #[test]
+    fn classify_response_error_includes_code_and_body() {
+        let json = json!({
+            "ret": 10045,
+            "message": "upload blocked",
+            "data": { "reason": "quota exceeded" }
+        });
+
+        let err = classify_response_error(&json).expect("expected response error");
+        assert!(err.message.contains("upload blocked"));
+        assert!(err.message.contains("code=10045"));
+        assert!(err.message.contains("\"ret\":10045"));
+        assert!(err.message.contains("\"reason\":\"quota exceeded\""));
     }
 
     fn make_rgba_pattern(width: u32, height: u32, transparent: bool) -> RgbaImage {
