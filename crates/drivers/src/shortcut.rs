@@ -233,8 +233,9 @@ pub fn parse_builtin_review_action(
         "等" => ReviewAction::Defer {
             delay_ms: REVIEW_DEFER_MS,
         },
-        "删" => ReviewAction::Delete,
-        "拒" => ReviewAction::Reject,
+        "删" => ReviewAction::Delete { comment: None },
+        "彻底删" => ReviewAction::HardDelete { comment: None },
+        "拒" => ReviewAction::Reject { comment: None },
         "立即" => ReviewAction::Immediate,
         "刷新" => ReviewAction::Refresh,
         "重渲染" => ReviewAction::Rerender,

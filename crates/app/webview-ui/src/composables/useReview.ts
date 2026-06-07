@@ -9,7 +9,7 @@ export function useReview() {
   const detailLoading = ref(false)
   const actionLoading = ref(false)
 
-  const stage = ref<Stage | ''>('')
+  const stage = ref<Stage | '' | '__active__'>('__active__')
   const keyword = ref('')
   const posts = ref<PostItem[]>([])
   const page = ref(0)
@@ -51,7 +51,7 @@ export function useReview() {
 
   function buildQueryParams(): URLSearchParams {
     const params = new URLSearchParams()
-    if (stage.value) {
+    if (stage.value && stage.value !== '__active__') {
       params.set('stage', stage.value)
     }
     params.set('limit', String(pageSize.value))

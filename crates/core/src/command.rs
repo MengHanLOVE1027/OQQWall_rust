@@ -59,8 +59,10 @@ pub struct ReviewActionBatchCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewAction {
     Approve,
-    Reject,
-    Delete,
+    Reject { comment: Option<String> },
+    Delete { comment: Option<String> },
+    /// 彻底删除：QQ空间撤回 + 本地数据清除
+    HardDelete { comment: Option<String> },
     Defer { delay_ms: TimestampMs },
     Skip,
     Immediate,

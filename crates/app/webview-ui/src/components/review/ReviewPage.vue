@@ -35,6 +35,7 @@ const groupOptions = computed(() => {
 
 const visiblePosts = computed(() => {
   let items = [...review.posts.value]
+  if (review.stage.value === '__active__') items = items.filter(p => !['rejected','skipped','failed'].includes(p.stage))
   if (groupFilter.value !== 'all') items = items.filter(p => p.group_id === groupFilter.value)
   if (onlyError.value) items = items.filter(p => !!p.last_error)
   if (onlyActionable.value) items = items.filter(p => !!p.review_id)
@@ -85,7 +86,7 @@ function toggleVisibleSelectAll() {
 }
 
 function handleResetFilters() {
-  review.stage.value = ''; review.keyword.value = ''
+  review.stage.value = '__active__'; review.keyword.value = ''
   groupFilter.value = 'all'; sortMode.value = 'newest'
   onlyError.value = false; onlyActionable.value = false
   review.page.value = 0; review.search()

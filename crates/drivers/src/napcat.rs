@@ -1941,17 +1941,21 @@ async fn parse_inbound_event(
     }
 
     let message_type = value.get("message_type").and_then(|v| v.as_str())?;
-    debug_log!(
-        "napcat inbound: post_type={} message_type={}",
-        post_type,
-        message_type
-    );
     let user_id = value_opt_to_string(value.get("user_id"))?;
     let self_id = value_opt_to_string(value.get("self_id")).unwrap_or_else(|| "napcat".to_string());
     let message_id =
         value_opt_to_string(value.get("message_id")).unwrap_or_else(|| "0".to_string());
     let sender_name = extract_sender_name(value);
     let timestamp_ms = inbound_timestamp_ms(value);
+    let raw_text = value.get("raw_message").and_then(|v| v.as_str()).unwrap_or("");
+    let text_preview: String = raw_text.chars().take(60).collect();
+    debug_log!(
+        "napcat inbound: type={} user={} name={} text=[{}]",
+        message_type,
+        user_id,
+        sender_name.as_deref().unwrap_or("?"),
+        text_preview
+    );
 
     if message_type == "private" && (post_type == "message_sent" || user_id == self_id) {
         debug_log!(
@@ -1983,12 +1987,9 @@ async fn parse_inbound_event(
             summary_text: _,
             attachments: _attachments,
         } = extracted;
-        debug_log!(
-            "napcat inbound content: text_len={} attachments={} reply_id_present={}",
-            text.len(),
-            _attachments.len(),
-            reply_id.is_some()
-        );
+        if !_attachments.is_empty() {
+            debug_log!("napcat inbound attachments: count={}", _attachments.len());
+        }
         let chat_group_id = value_opt_to_string(value.get("group_id"))?;
         let is_audit_group = runtime.audit_group_id.as_deref() == Some(chat_group_id.as_str());
         if runtime.audit_group_id.is_some() && !is_audit_group {
@@ -2602,11 +2603,9 @@ async fn parse_inbound_event(
             debug_log!("napcat inbound ignored private system message");
             return None;
         }
-        debug_log!(
-            "napcat inbound private lite: text_len={} attachments={}",
-            text.len(),
-            attachments.len()
-        );
+        if !attachments.is_empty() {
+            debug_log!("napcat inbound private attachments: count={}", attachments.len());
+        }
         let ingress_id = derive_ingress_id(&[
             self_id.as_bytes(),
             user_id.as_bytes(),
@@ -2642,7 +2641,7 @@ async fn parse_inbound_event(
             platform_msg_id: message_id,
             message: IngressMessage { text, attachments },
             received_at_ms: timestamp_ms,
-            close_immediately: false,
+            close_immediately: true,
         }));
     }
 

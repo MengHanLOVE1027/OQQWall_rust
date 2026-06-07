@@ -3,7 +3,7 @@ import { NButton, NCheckbox, NInput, NSelect, NSwitch } from 'naive-ui'
 import { STAGE_LABELS, type Stage } from '../../api/types'
 
 defineProps<{
-  stage: Stage | ''; groupFilter: string; sortMode: string; keyword: string
+  stage: Stage | '' | '__active__'; groupFilter: string; sortMode: string; keyword: string
   onlyError: boolean; onlyActionable: boolean; autoRefresh: boolean
   groupOptions: { label: string; value: string }[]
 }>()
@@ -15,7 +15,15 @@ const emit = defineEmits<{
   search: []; refresh: []; reset: []; toggleSelectAll: []
 }>()
 
-const stages = [{ label: '全部状态', value: '' }, ...Object.keys(STAGE_LABELS).map(k => ({ label: STAGE_LABELS[k], value: k }))]
+// "全部状态" = 全部活跃状态（排除已拒绝/已跳过/失败）
+const ACTIVE_STAGES = new Set(['drafted','render_requested','rendered','review_pending','reviewed','scheduled','sending','sent','manual'])
+const stages = [
+  { label: '全部活跃', value: '__active__' },
+  { label: '全部（含已删除）', value: '' },
+  ...Object.keys(STAGE_LABELS).filter(k => ACTIVE_STAGES.has(k)).map(k => ({ label: STAGE_LABELS[k], value: k })),
+  { label: '──', value: '__sep__', disabled: true },
+  ...Object.keys(STAGE_LABELS).filter(k => !ACTIVE_STAGES.has(k)).map(k => ({ label: STAGE_LABELS[k], value: k })),
+]
 const sorts = [{ label: '最新优先', value: 'newest' }, { label: '最早优先', value: 'oldest' }, { label: '编号优先', value: 'code' }]
 </script>
 

@@ -1277,8 +1277,9 @@ fn can_access_blob(
 fn parse_review_action(req: &ReviewDecisionRequest) -> Result<ReviewAction, &'static str> {
     match req.action.as_str() {
         "approve" => Ok(ReviewAction::Approve),
-        "reject" => Ok(ReviewAction::Reject),
-        "delete" => Ok(ReviewAction::Delete),
+        "reject" => Ok(ReviewAction::Reject { comment: req.comment.clone() }),
+        "delete" => Ok(ReviewAction::Delete { comment: req.comment.clone() }),
+        "hard_delete" => Ok(ReviewAction::HardDelete { comment: req.comment.clone() }),
         "defer" => Ok(ReviewAction::Defer {
             delay_ms: req.delay_ms.unwrap_or(0),
         }),

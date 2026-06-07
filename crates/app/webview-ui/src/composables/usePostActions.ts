@@ -31,7 +31,7 @@ export function usePostActions() {
   function buildPayload(action: string): Record<string, unknown> {
     const payload: Record<string, unknown> = { action }
 
-    if (action === 'reject' || action === 'blacklist') {
+    if (action === 'reject' || action === 'delete' || action === 'hard_delete' || action === 'blacklist') {
       const comment = confirmState.comment.trim()
       if (comment) payload.comment = comment
       if (action === 'blacklist' && !comment) throw new Error('请填写拉黑原因')
@@ -117,7 +117,7 @@ export function usePostActions() {
 
   /** Check if action causes post to leave review queue (close detail) */
   function isTerminalAction(action: string): boolean {
-    return ['approve', 'reject', 'delete', 'immediate'].includes(action)
+    return ['approve', 'reject', 'delete', 'hard_delete', 'immediate'].includes(action)
   }
 
   return {

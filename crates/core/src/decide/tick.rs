@@ -94,6 +94,12 @@ fn session_due_at_ms(
     now_ms: TimestampMs,
     config: &CoreConfig,
 ) -> Option<TimestampMs> {
+    // If session was opened with close_immediately (close_at_ms == received_at_ms),
+    // respect that — close as soon as the tick fires.
+    if meta.close_at_ms <= now_ms && meta.close_at_ms > 0 {
+        return Some(now_ms);
+    }
+
     let last_message_ms = state
         .ingress_meta
         .get(&meta.last_ingress_id)

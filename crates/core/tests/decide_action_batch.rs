@@ -95,7 +95,7 @@ fn review_batch_reject_then_blacklist_keeps_followup_action() {
         review_code: Some(review_code),
         audit_msg_id: None,
         actions: vec![
-            ReviewAction::Reject,
+            ReviewAction::Reject { comment: None },
             ReviewAction::Blacklist {
                 reason: Some("spam".to_string()),
             },

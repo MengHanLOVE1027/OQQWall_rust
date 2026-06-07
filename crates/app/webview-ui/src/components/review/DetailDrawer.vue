@@ -45,7 +45,7 @@ const extHint = computed(() => {
   }
 })
 
-const needsText = computed(() => ['reject','blacklist','comment','reply'].includes(action.value))
+const needsText = computed(() => ['reject','delete','hard_delete','blacklist','comment','reply'].includes(action.value))
 const needsMs = computed(() => action.value === 'defer')
 const needsKey = computed(() => action.value === 'quick_reply')
 const needsCode = computed(() => action.value === 'merge')
@@ -112,6 +112,7 @@ async function onConfirm() {
             <n-button type="primary" @click="action='approve';doAction()" :loading="actions.submitting.value">通过</n-button>
             <n-button type="warning" ghost @click="action='reject';doAction()" :loading="actions.submitting.value">拒绝</n-button>
             <n-button type="error" ghost @click="action='delete';doAction()" :loading="actions.submitting.value">删除</n-button>
+            <n-button type="error" @click="action='hard_delete';doAction()" :loading="actions.submitting.value">彻底删除</n-button>
             <n-button ghost @click="action='immediate';doAction()" :loading="actions.submitting.value">立即发送</n-button>
             <n-button ghost @click="action='rerender';doAction()" :loading="actions.submitting.value">重渲染</n-button>
           </div>
@@ -171,6 +172,13 @@ async function onConfirm() {
   <n-modal v-model:show="actions.confirmState.show" preset="card" style="max-width:520px" :mask-closable="false">
     <div><span class="k">确认操作</span><h3 style="margin:8px 0 6px;color:#1e293b">{{ ACTION_LABELS[actions.confirmState.action] }} {{ actions.confirmState.postLabel }}</h3></div>
     <p v-if="actions.confirmState.groupId" style="color:rgba(30,41,59,0.62);line-height:1.7">分组：{{ actions.confirmState.groupId }} · 投稿人：{{ actions.confirmState.senderId }}</p>
+    <n-input
+      v-if="['reject','delete','hard_delete'].includes(actions.confirmState.action)"
+      v-model:value="actions.confirmState.comment"
+      type="textarea" :autosize="{ minRows: 2, maxRows: 4 }"
+	      placeholder="理由（可选，留空则默认：无）"
+      style="margin-bottom: 12px"
+    />
     <n-alert type="warning" :bordered="false">确认后立即提交到后端处理。</n-alert>
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
       <n-button @click="actions.confirmState.show=false">取消</n-button>
