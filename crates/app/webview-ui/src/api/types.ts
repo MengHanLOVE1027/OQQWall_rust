@@ -10,6 +10,7 @@ export type Stage =
   | 'sending'
   | 'sent'
   | 'rejected'
+  | 'deleted'
   | 'skipped'
   | 'manual'
   | 'failed'
@@ -100,6 +101,7 @@ export const STAGE_LABELS: Record<string, string> = {
   sending: '发送中',
   sent: '已发送',
   rejected: '已拒绝',
+  deleted: '已删除',
   skipped: '已跳过',
   manual: '人工处理',
   failed: '失败',

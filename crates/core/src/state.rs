@@ -53,6 +53,7 @@ pub enum PostStage {
     Sending,
     Sent,
     Rejected,
+    Deleted,
     Skipped,
     Manual,
     Failed,

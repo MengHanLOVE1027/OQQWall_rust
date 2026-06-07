@@ -38,30 +38,35 @@ pub fn decide_review_action(
             build_approve_events(state, cmd, config, review_id, post_id, group_id)
         }
         ReviewAction::Reject { comment } => {
-            let mut events = vec![Event::Review(ReviewEvent::ReviewDecisionRecorded {
-                review_id,
-                decision: ReviewDecision::Rejected,
-                decided_by: cmd.operator_id.clone(),
-                decided_at_ms: cmd.now_ms,
-            })];
-            if let Some(reason) = comment.as_ref().filter(|c| !c.trim().is_empty()) {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
+            let reason_text = comment.as_ref().filter(|c| !c.trim().is_empty())
+                .map(|c| format!("拒绝，理由：{}", c))
+                .unwrap_or_else(|| "拒绝，理由：无".to_string());
+            let mut events = vec![
+                Event::Review(ReviewEvent::ReviewDecisionRecorded {
                     review_id,
-                    text: format!("拒绝，理由：{}", reason),
-                }));
-            } else {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
+                    decision: ReviewDecision::Rejected,
+                    decided_by: cmd.operator_id.clone(),
+                    decided_at_ms: cmd.now_ms,
+                }),
+                Event::Review(ReviewEvent::ReviewCommentAdded {
                     review_id,
-                    text: "拒绝，理由：无".to_string(),
-                }));
-            }
+                    text: reason_text.clone(),
+                }),
+                Event::Review(ReviewEvent::ReviewReplyRequested {
+                    review_id,
+                    text: format!("您的投稿未通过审核。{}", reason_text),
+                }),
+            ];
             if state.send_plans.contains_key(&post_id) {
                 events.push(Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }));
             }
             events
         }
         ReviewAction::Delete { comment } => {
-            let mut events = vec![
+            let reason_text = comment.as_ref().filter(|c| !c.trim().is_empty())
+                .map(|c| format!("删除，理由：{}", c))
+                .unwrap_or_else(|| "删除，理由：无".to_string());
+            vec![
                 Event::Review(ReviewEvent::ReviewDecisionRecorded {
                     review_id,
                     decision: ReviewDecision::Deleted,
@@ -69,21 +74,20 @@ pub fn decide_review_action(
                     decided_at_ms: cmd.now_ms,
                 }),
                 Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }),
-            ];
-            if let Some(reason) = comment.as_ref().filter(|c| !c.trim().is_empty()) {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
+                Event::Review(ReviewEvent::ReviewCommentAdded {
                     review_id,
-                    text: format!("删除，理由：{}", reason),
-                }));
-            } else {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
+                    text: reason_text.clone(),
+                }),
+                Event::Review(ReviewEvent::ReviewReplyRequested {
                     review_id,
-                    text: "删除，理由：无".to_string(),
-                }));
-            }
-            events
+                    text: format!("您的投稿已被删除。{}", reason_text),
+                }),
+            ]
         }
         ReviewAction::HardDelete { comment } => {
+            let reason_text = comment.as_ref().filter(|c| !c.trim().is_empty())
+                .map(|c| format!("彻底删除，理由：{}", c))
+                .unwrap_or_else(|| "彻底删除，理由：无".to_string());
             let mut events = vec![
                 Event::Review(ReviewEvent::ReviewDecisionRecorded {
                     review_id,
@@ -92,18 +96,15 @@ pub fn decide_review_action(
                     decided_at_ms: cmd.now_ms,
                 }),
                 Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }),
+                Event::Review(ReviewEvent::ReviewCommentAdded {
+                    review_id,
+                    text: reason_text.clone(),
+                }),
+                Event::Review(ReviewEvent::ReviewReplyRequested {
+                    review_id,
+                    text: format!("您的投稿已被彻底删除。{}", reason_text),
+                }),
             ];
-            if let Some(reason) = comment.as_ref().filter(|c| !c.trim().is_empty()) {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
-                    review_id,
-                    text: format!("彻底删除，理由：{}", reason),
-                }));
-            } else {
-                events.push(Event::Review(ReviewEvent::ReviewCommentAdded {
-                    review_id,
-                    text: "彻底删除，理由：无".to_string(),
-                }));
-            }
             // Release all blobs
             if let Some(draft) = state.drafts.get(&post_id) {
                 for block in &draft.blocks {

@@ -456,7 +456,7 @@ fn reduce_review(state: &mut StateView, event: &ReviewEvent) {
                     crate::event::ReviewDecision::Rejected => PostStage::Rejected,
                     crate::event::ReviewDecision::Deferred => PostStage::ReviewPending,
                     crate::event::ReviewDecision::Skipped => PostStage::Skipped,
-                    crate::event::ReviewDecision::Deleted => PostStage::Rejected,
+                    crate::event::ReviewDecision::Deleted => PostStage::Deleted,
                 };
                 state.update_post_stage(post_id, stage);
             }
