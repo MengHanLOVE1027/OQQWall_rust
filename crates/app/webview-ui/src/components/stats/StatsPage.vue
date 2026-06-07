@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import {
   NCard,
   NGrid,
@@ -9,125 +9,43 @@ import {
   NSpin,
   NStatistic,
   NTag,
-  useMessage,
 } from 'naive-ui'
-import { api } from '../../api/client'
-import { STAGE_LABELS, type StatsResponse } from '../../api/types'
+import { useStats } from '../../composables/useStats'
 
-const message = useMessage()
-const loading = ref(false)
-const stats = ref<StatsResponse | null>(null)
-
-const stageEntries = computed(() => {
-  if (!stats.value) return []
-  return Object.entries(stats.value.stage_breakdown)
-    .map(([stage, count]) => ({
-      stage,
-      count,
-      percentage: stats.value && stats.value.total_count > 0
-        ? Number(((count / stats.value.total_count) * 100).toFixed(1))
-        : 0,
-    }))
-    .sort((a, b) => b.count - a.count)
-})
-
-const leadStage = computed(() => stageEntries.value[0] ?? null)
-
-const trendMaxValue = computed(() => {
-  if (!stats.value?.daily_trend) return 1
-  let max = 1
-  for (const item of stats.value.daily_trend) {
-    const total = item.submitted + item.approved + item.rejected
-    if (total > max) max = total
-  }
-  return max
-})
-
-const hourlyMaxCount = computed(() => {
-  if (!stats.value?.hourly_distribution) return 1
-  let max = 1
-  for (const item of stats.value.hourly_distribution) {
-    if (item.count > max) max = item.count
-  }
-  return max
-})
-
-function maxBarHeight(value: number) {
-  const maxH = 120
-  return Math.max(2, Math.round((value / trendMaxValue.value) * maxH))
-}
-
-function hourlyBarHeight(value: number) {
-  const maxH = 80
-  return Math.max(2, Math.round((value / hourlyMaxCount.value) * maxH))
-}
-
-function formatDuration(ms: number) {
-  if (ms < 60000) return Math.round(ms / 1000) + ' 秒'
-  if (ms < 3600000) return (ms / 60000).toFixed(1) + ' 分钟'
-  return (ms / 3600000).toFixed(2) + ' 小时'
-}
-
-const cardMetrics = computed(() => {
-  if (!stats.value) return []
-  return [
-    {
-      label: '今日投稿',
-      value: stats.value.today_count,
-      hint: '自然日内新增入库稿件',
-    },
-    {
-      label: '待审核',
-      value: stats.value.pending_count,
-      hint: '仍需人工确认的稿件',
-    },
-    {
-      label: '累计总数',
-      value: stats.value.total_count,
-      hint: '当前状态视图中的总稿件数',
-    },
-  ]
-})
-
-async function loadStats() {
-  loading.value = true
-  try {
-    stats.value = await api<StatsResponse>('/api/stats')
-  } catch (e) {
-    message.error((e as Error).message)
-  } finally {
-    loading.value = false
-  }
-}
+const stats = useStats()
 
 onMounted(() => {
-  loadStats()
+  stats.loadStats()
 })
 </script>
 
 <template>
   <div class="stats-container">
+    <!-- Hero -->
     <section class="stats-hero">
       <div>
-        <span class="hero-kicker">数据统计</span>
-        <h1>查看当前稿件总量、待审数量和阶段分布。</h1>
-        <p>用于快速了解审核积压和整体处理进度。</p>
+        <span class="hero-kicker">数据报表</span>
+        <h1>查看投稿趋势、时段分布和审核效率。</h1>
+        <p>用于了解整体运营状态和团队处理效率。</p>
       </div>
       <div class="hero-side">
-        <n-tag v-if="leadStage" round :bordered="false" type="warning">
-          占比最高：{{ STAGE_LABELS[leadStage.stage] ?? leadStage.stage }} {{ leadStage.percentage }}%
+        <n-tag v-if="stats.leadStage.value" round :bordered="false" type="warning">
+          占比最高：{{ stats.leadStage.value.label }} {{ stats.leadStage.value.percentage }}%
         </n-tag>
-        <button class="refresh-btn" @click="loadStats">刷新数据</button>
+        <button class="refresh-btn" @click="stats.loadStats()">刷新数据</button>
       </div>
     </section>
 
-    <div v-if="loading && !stats" class="loading-wrap">
+    <!-- Loading -->
+    <div v-if="stats.loading.value && !stats.stats.value" class="loading-wrap">
       <n-spin size="large" />
     </div>
 
-    <div v-else-if="stats" class="dashboard">
+    <!-- Dashboard -->
+    <div v-else-if="stats.stats.value" class="dashboard">
+      <!-- Metric cards -->
       <n-grid x-gap="14" y-gap="14" cols="1 s:2 m:3" responsive="screen">
-        <n-grid-item v-for="metric in cardMetrics" :key="metric.label">
+        <n-grid-item v-for="metric in stats.cardMetrics.value" :key="metric.label">
           <n-card class="stat-card" :bordered="false">
             <span class="stat-label">{{ metric.label }}</span>
             <n-statistic>
@@ -138,19 +56,20 @@ onMounted(() => {
         </n-grid-item>
       </n-grid>
 
+      <!-- Stage breakdown -->
       <section class="distribution-panel">
         <div class="panel-head">
           <div>
             <span class="panel-kicker">阶段结构</span>
             <h2>各阶段分布</h2>
           </div>
-          <span class="panel-note">总稿件 {{ stats.total_count }} 条</span>
+          <span class="panel-note">总稿件 {{ stats.stats.value.total_count }} 条</span>
         </div>
 
         <div class="progress-list">
-          <div v-for="entry in stageEntries" :key="entry.stage" class="progress-item">
+          <div v-for="entry in stats.stageEntries.value" :key="entry.stage" class="progress-item">
             <div class="label-block">
-              <strong>{{ STAGE_LABELS[entry.stage] ?? entry.stage }}</strong>
+              <strong>{{ entry.label }}</strong>
               <span>{{ entry.count }} 条</span>
             </div>
             <div class="bar">
@@ -167,34 +86,39 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- Daily Trend Chart -->
-      <section v-if="stats.daily_trend && stats.daily_trend.length > 0" class="distribution-panel">
+      <!-- Daily Trend -->
+      <section v-if="stats.stats.value.daily_trend?.length" class="distribution-panel">
         <div class="panel-head">
           <div>
             <span class="panel-kicker">投稿趋势</span>
             <h2>近7天投稿趋势</h2>
           </div>
-          <span class="panel-note">提交 · 通过 · 拒绝</span>
+          <span class="panel-note">提交 · 通过 · 拒绝 · 删除</span>
         </div>
         <div class="trend-chart">
           <div class="trend-bars">
-            <div v-for="item in stats.daily_trend" :key="item.date" class="trend-bar-group">
+            <div v-for="item in stats.stats.value.daily_trend" :key="item.date" class="trend-bar-group">
               <div class="trend-bar-label">{{ item.date.slice(5) }}</div>
               <div class="trend-bar-stack">
                 <div
                   class="trend-bar submitted"
-                  :style="{ height: maxBarHeight(item.submitted) + 'px' }"
+                  :style="{ height: stats.trendBarHeight(item.submitted) + 'px' }"
                   :title="'提交: ' + item.submitted"
                 ></div>
                 <div
                   class="trend-bar approved"
-                  :style="{ height: maxBarHeight(item.approved) + 'px' }"
+                  :style="{ height: stats.trendBarHeight(item.approved) + 'px' }"
                   :title="'通过: ' + item.approved"
                 ></div>
                 <div
                   class="trend-bar rejected"
-                  :style="{ height: maxBarHeight(item.rejected) + 'px' }"
+                  :style="{ height: stats.trendBarHeight(item.rejected) + 'px' }"
                   :title="'拒绝: ' + item.rejected"
+                ></div>
+                <div
+                  class="trend-bar deleted"
+                  :style="{ height: stats.trendBarHeight(item.deleted) + 'px' }"
+                  :title="'删除: ' + item.deleted"
                 ></div>
               </div>
               <div class="trend-bar-value">{{ item.submitted }}</div>
@@ -204,12 +128,13 @@ onMounted(() => {
             <span class="legend-dot submitted"></span> 提交
             <span class="legend-dot approved"></span> 通过
             <span class="legend-dot rejected"></span> 拒绝
+            <span class="legend-dot deleted"></span> 删除
           </div>
         </div>
       </section>
 
       <!-- Hourly Distribution -->
-      <section v-if="stats.hourly_distribution && stats.hourly_distribution.length > 0" class="distribution-panel">
+      <section v-if="stats.stats.value.hourly_distribution?.length" class="distribution-panel">
         <div class="panel-head">
           <div>
             <span class="panel-kicker">时段分布</span>
@@ -217,8 +142,13 @@ onMounted(() => {
           </div>
         </div>
         <div class="hourly-grid">
-          <div v-for="item in stats.hourly_distribution" :key="item.hour" class="hourly-cell" :class="{ peak: item.count >= hourlyMaxCount * 0.7 }">
-            <div class="hourly-bar" :style="{ height: hourlyBarHeight(item.count) + 'px' }"></div>
+          <div
+            v-for="item in stats.stats.value.hourly_distribution"
+            :key="item.hour"
+            class="hourly-cell"
+            :class="{ peak: item.count >= stats.hourlyMaxCount.value * 0.7 }"
+          >
+            <div class="hourly-bar" :style="{ height: stats.hourlyBarHeight(item.count) + 'px' }"></div>
             <span class="hourly-label">{{ String(item.hour).padStart(2, '0') }}</span>
             <span class="hourly-count">{{ item.count }}</span>
           </div>
@@ -226,7 +156,7 @@ onMounted(() => {
       </section>
 
       <!-- Review Efficiency -->
-      <section v-if="stats.avg_review_time_ms" class="distribution-panel">
+      <section v-if="stats.stats.value.avg_review_time_ms" class="distribution-panel">
         <div class="panel-head">
           <div>
             <span class="panel-kicker">审核效率</span>
@@ -235,10 +165,17 @@ onMounted(() => {
         </div>
         <div class="efficiency-card">
           <div class="efficiency-value">
-            {{ formatDuration(stats.avg_review_time_ms) }}
+            {{ stats.formatDuration(stats.stats.value.avg_review_time_ms) }}
           </div>
           <span class="efficiency-hint">从投稿提交到审核完成的平均耗时</span>
         </div>
+      </section>
+
+      <!-- No data fallback -->
+      <section v-if="!stats.stats.value.daily_trend?.length && !stats.stats.value.hourly_distribution?.length" class="distribution-panel">
+        <p style="color: rgba(30,41,59,0.54); text-align: center; padding: 24px 0;">
+          暂无趋势数据。当有更多稿件时，这里将展示投稿趋势、时段分布和审核效率。
+        </p>
       </section>
     </div>
   </div>
@@ -459,6 +396,10 @@ onMounted(() => {
   background: linear-gradient(0deg, rgba(245, 158, 11, 0.5), rgba(245, 158, 11, 0.2));
 }
 
+.trend-bar.deleted {
+  background: linear-gradient(0deg, rgba(239, 68, 68, 0.5), rgba(239, 68, 68, 0.2));
+}
+
 .trend-bar-value {
   font-size: 12px;
   color: #1e293b;
@@ -481,17 +422,10 @@ onMounted(() => {
   border-radius: 3px;
 }
 
-.legend-dot.submitted {
-  background: rgba(59, 130, 246, 0.6);
-}
-
-.legend-dot.approved {
-  background: rgba(99, 102, 241, 0.7);
-}
-
-.legend-dot.rejected {
-  background: rgba(245, 158, 11, 0.6);
-}
+.legend-dot.submitted { background: rgba(59, 130, 246, 0.6); }
+.legend-dot.approved { background: rgba(99, 102, 241, 0.7); }
+.legend-dot.rejected { background: rgba(245, 158, 11, 0.6); }
+.legend-dot.deleted { background: rgba(239, 68, 68, 0.6); }
 
 .hourly-grid {
   display: grid;

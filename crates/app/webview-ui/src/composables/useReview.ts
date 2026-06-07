@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { api } from '../api/client'
-import { STAGE_LABELS, type PostDetail, type PostItem, type Stage } from '../api/types'
+import { type PostDetail, type PostItem, type Stage } from '../api/types'
 
 export function useReview() {
   const message = useMessage()
@@ -19,19 +19,23 @@ export function useReview() {
   const sortOrder = ref('desc')
 
   const selectedReviewIds = ref<string[]>([])
+  // "Select all" mode: when true, ALL matching posts are selected (not just visible page)
+  const selectAllMode = ref(false)
+  const selectAllTotal = ref(0)
 
   const detail = ref<PostDetail | null>(null)
   const detailOpen = ref(false)
   const currentDetailId = ref<string | null>(null)
 
   const totalPages = computed(() =>
-    Math.max(1, Math.ceil(totalCount.value / pageSize.value))
+    Math.max(1, Math.ceil(totalCount.value / pageSize.value)),
   )
 
-  const pendingCount = computed(() => posts.value.filter((item) => item.stage === 'review_pending').length)
+  const pendingCount = computed(() =>
+    posts.value.filter((item) => item.stage === 'review_pending').length,
+  )
 
   const filteredPosts = computed(() => {
-    // Server-side filtering now, return posts directly
     return posts.value
   })
 
@@ -40,36 +44,46 @@ export function useReview() {
   )
 
   const allSelected = computed(() => {
+    if (selectAllMode.value) return true
     if (selectableReviewIds.value.length === 0) return false
     return selectableReviewIds.value.every((id) => selectedReviewIds.value.includes(id))
   })
 
+  function buildQueryParams(): URLSearchParams {
+    const params = new URLSearchParams()
+    params.set('stage', stage.value)
+    params.set('limit', String(pageSize.value))
+    params.set('cursor', String(page.value * pageSize.value))
+    if (keyword.value.trim()) {
+      params.set('keyword', keyword.value.trim())
+    }
+    params.set('sort_by', sortBy.value)
+    params.set('sort_order', sortOrder.value)
+    return params
+  }
+
   async function loadPosts() {
     loading.value = true
     try {
-      const params = new URLSearchParams()
-      params.set('stage', stage.value)
-      params.set('limit', String(pageSize.value))
-      params.set('cursor', String(page.value * pageSize.value))
-      if (keyword.value.trim()) {
-        params.set('keyword', keyword.value.trim())
-      }
-      params.set('sort_by', sortBy.value)
-      params.set('sort_order', sortOrder.value)
-
       const result = await api<{ items: PostItem[]; next_cursor: number | null }>(
-        '/api/posts?' + params.toString()
+        '/api/posts?' + buildQueryParams().toString(),
       )
       posts.value = result.items
       if (result.next_cursor !== null && result.next_cursor !== undefined) {
-        totalCount.value = result.items.length > 0
-          ? (page.value + 2) * pageSize.value // estimate
-          : page.value * pageSize.value
+        totalCount.value =
+          result.items.length > 0
+            ? (page.value + 2) * pageSize.value
+            : page.value * pageSize.value
       } else {
         totalCount.value = page.value * pageSize.value + result.items.length
       }
-      const reviewSet = new Set(result.items.map((item) => item.review_id).filter(Boolean) as string[])
+      // Keep selections that still exist in the loaded page
+      const reviewSet = new Set(
+        result.items.map((item) => item.review_id).filter(Boolean) as string[],
+      )
       selectedReviewIds.value = selectedReviewIds.value.filter((id) => reviewSet.has(id))
+      selectAllMode.value = false
+      selectAllTotal.value = 0
     } catch (err) {
       message.error((err as Error).message)
     } finally {
@@ -92,6 +106,9 @@ export function useReview() {
 
   function search() {
     page.value = 0
+    selectAllMode.value = false
+    selectAllTotal.value = 0
+    selectedReviewIds.value = []
     loadPosts()
   }
 
@@ -123,14 +140,50 @@ export function useReview() {
 
   function toggleSelectAll() {
     if (allSelected.value) {
-      selectedReviewIds.value = selectedReviewIds.value.filter((id) => !selectableReviewIds.value.includes(id))
+      selectedReviewIds.value = []
+      selectAllMode.value = false
+      selectAllTotal.value = 0
       return
     }
-    const set = new Set([...selectedReviewIds.value, ...selectableReviewIds.value])
-    selectedReviewIds.value = [...set]
+    // Select all visible items
+    selectedReviewIds.value = [...new Set([...selectedReviewIds.value, ...selectableReviewIds.value])]
+  }
+
+  /** Fetch ALL review IDs matching current filter and select them all */
+  async function selectAllAcrossPages() {
+    loading.value = true
+    try {
+      const params = buildQueryParams()
+      // Remove pagination params
+      params.delete('cursor')
+      params.delete('limit')
+      const result = await api<{ review_ids: string[]; total: number }>(
+        '/api/reviews/ids?' + params.toString(),
+      )
+      selectedReviewIds.value = result.review_ids
+      selectAllMode.value = true
+      selectAllTotal.value = result.total
+      if (result.total === 0) {
+        message.info('没有可选择的稿件')
+      } else {
+        message.success(`已选择全部 ${result.total} 条稿件`)
+      }
+    } catch (err) {
+      message.error((err as Error).message)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function clearSelection() {
+    selectedReviewIds.value = []
+    selectAllMode.value = false
+    selectAllTotal.value = 0
   }
 
   function toggleOneSelection(reviewId: string, checked: boolean) {
+    selectAllMode.value = false
+    selectAllTotal.value = 0
     if (checked) {
       if (!selectedReviewIds.value.includes(reviewId)) {
         selectedReviewIds.value = [...selectedReviewIds.value, reviewId]
@@ -150,6 +203,8 @@ export function useReview() {
     filteredPosts,
     pendingCount,
     selectedReviewIds,
+    selectAllMode,
+    selectAllTotal,
     detail,
     detailOpen,
     allSelected,
@@ -159,10 +214,13 @@ export function useReview() {
     totalPages,
     sortBy,
     sortOrder,
+    selectableReviewIds,
     loadPosts,
     openDetail,
     refreshDetail,
     toggleSelectAll,
+    selectAllAcrossPages,
+    clearSelection,
     toggleOneSelection,
     goToPage,
     nextPage,

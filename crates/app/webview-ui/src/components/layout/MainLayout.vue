@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
-import { useAuth } from '../../composables/useAuth'
+import { useRouter } from 'vue-router'
 import {
   NAvatar,
   NDropdown,
@@ -19,17 +19,18 @@ import {
   PersonOutline as UserIcon,
   SparklesOutline as SparklesIcon,
 } from '@vicons/ionicons5'
+import { api } from '../../api/client'
+import { setCachedMe, getCachedMe } from '../../router'
 
-const props = defineProps<{
-  activeKey: string
-}>()
-
-const emit = defineEmits<{
-  (e: 'update:activeKey', key: string): void
-}>()
-
-const auth = useAuth()
+const router = useRouter()
 const collapsed = ref(false)
+
+const me = computed(() => getCachedMe())
+
+const activeKey = computed(() => {
+  if (router.currentRoute.value.path.startsWith('/stats')) return 'stats'
+  return 'review'
+})
 
 const menuOptions = [
   {
@@ -38,46 +39,49 @@ const menuOptions = [
     icon: () => h(NIcon, null, { default: () => h(ReviewIcon) }),
   },
   {
-    label: '数据统计',
+    label: '数据报表',
     key: 'stats',
     icon: () => h(NIcon, null, { default: () => h(StatsIcon) }),
   },
 ]
 
 const userOptions = [
-  { label: '退出登录', key: 'logout', icon: () => h(NIcon, null, { default: () => h(LogoutIcon) }) },
+  {
+    label: '退出登录',
+    key: 'logout',
+    icon: () => h(NIcon, null, { default: () => h(LogoutIcon) }),
+  },
 ]
 
 const viewMeta = computed(() => {
-  if (props.activeKey === 'stats') {
-    return {
-      title: '数据统计',
-      subtitle: '查看稿件数量、待审情况和阶段分布',
-    }
+  if (activeKey.value === 'stats') {
+    return { title: '数据报表', subtitle: '查看稿件趋势、时段分布和审核效率' }
   }
-  return {
-    title: '审核工作台',
-    subtitle: '查看稿件列表并执行审核操作',
-  }
+  return { title: '审核工作台', subtitle: '查看稿件列表并执行审核操作' }
 })
 
 const roleLabel = computed(() =>
-  auth.me.value?.role === 'global_admin' ? '全局管理员' : '分组管理员',
+  me.value?.role === 'global_admin' ? '全局管理员' : '分组管理员',
 )
 
 const scopeLabel = computed(() => {
-  if (auth.me.value?.role === 'global_admin') return '全部分组'
-  const count = auth.me.value?.groups.length ?? 0
+  if (me.value?.role === 'global_admin') return '全部分组'
+  const count = me.value?.groups.length ?? 0
   return count > 0 ? `已授权 ${count} 个分组` : '未绑定分组'
 })
 
 function handleMenuUpdate(key: string) {
-  emit('update:activeKey', key)
+  router.push(`/${key}`)
 }
 
-function handleUserSelect(key: string) {
+async function handleUserSelect(key: string) {
   if (key === 'logout') {
-    auth.logout()
+    try {
+      await api('/auth/logout', { method: 'POST' })
+    } finally {
+      setCachedMe(null)
+      router.replace('/login')
+    }
   }
 }
 </script>
@@ -109,11 +113,12 @@ function handleUserSelect(key: string) {
           <span>账号权限</span>
           <n-tag size="small" round type="success" :bordered="false">{{ roleLabel }}</n-tag>
         </div>
-        <strong>{{ auth.me.value?.username ?? '未登录' }}</strong>
+        <strong>{{ me?.username ?? '未登录' }}</strong>
         <p>{{ scopeLabel }}</p>
       </div>
 
       <n-menu
+        inverted
         :collapsed="collapsed"
         :collapsed-width="78"
         :collapsed-icon-size="22"
@@ -149,7 +154,7 @@ function handleUserSelect(key: string) {
                 <n-icon><UserIcon /></n-icon>
               </n-avatar>
               <div class="user-copy">
-                <span class="username">{{ auth.me.value?.username }}</span>
+                <span class="username">{{ me?.username }}</span>
                 <span class="user-role">{{ roleLabel }}</span>
               </div>
             </div>
@@ -168,7 +173,7 @@ function handleUserSelect(key: string) {
 
 <style scoped>
 .console-sider {
-  background: linear-gradient(180deg, rgba(24, 22, 19, 0.96) 0%, rgba(17, 16, 15, 0.96) 100%);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.96) 0%, rgba(24, 22, 19, 0.96) 100%);
   border-right: 1px solid var(--app-border);
 }
 
@@ -267,16 +272,19 @@ function handleUserSelect(key: string) {
 }
 
 .main-layout {
-  background: linear-gradient(180deg, rgba(249, 246, 239, 0.92), rgba(243, 237, 227, 0.92));
+  background: transparent;
+  display: flex;
+  flex-direction: column;
 }
 
 .header {
-  height: 104px;
-  padding: 20px 26px 0;
+  min-height: 96px;
+  padding: 18px 26px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   background: transparent;
+  flex-shrink: 0;
 }
 
 .header-left {
@@ -378,15 +386,13 @@ function handleUserSelect(key: string) {
 }
 
 .content-shell {
-  min-height: calc(100vh - 104px);
-  padding: 8px 26px 28px;
+  min-height: 0;
+  padding: 4px 26px 28px;
   color: #1e293b;
 }
 
 @media (max-width: 960px) {
   .header {
-    height: auto;
-    padding-bottom: 12px;
     align-items: flex-start;
     flex-direction: column;
     gap: 16px;

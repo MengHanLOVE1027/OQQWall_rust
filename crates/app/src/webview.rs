@@ -24,7 +24,7 @@ include!(concat!(env!("OUT_DIR"), "/webview_assets.rs"));
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        oqqwall_rust_infra::debug_log::log(format_args!($($arg)*));
+        oqqwall_rust_infra::debug_log::info(format_args!($($arg)*));
     };
 }
 
@@ -137,6 +137,12 @@ struct PostListItem {
 struct ListPostsResponse {
     items: Vec<PostListItem>,
     next_cursor: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct ListReviewIdsResponse {
+    review_ids: Vec<String>,
+    total: usize,
 }
 
 #[derive(Serialize)]
@@ -284,6 +290,7 @@ pub fn spawn_webview(handle: &EngineHandle, config: &AppConfig) {
         .route("/api/posts", get(webview_list_posts))
         .route("/api/posts/{post_id}", get(webview_get_post))
         .route("/api/blobs/{blob_id}", get(webview_get_blob))
+        .route("/api/reviews/ids", get(webview_list_review_ids))
         .route(
             "/api/reviews/{review_id}/decision",
             post(webview_decide_review),
@@ -752,6 +759,85 @@ async fn webview_list_posts(
         Json(ListPostsResponse { items, next_cursor }),
     )
         .into_response()
+}
+
+async fn webview_list_review_ids(
+    State(state): State<WebviewState>,
+    headers: HeaderMap,
+    Query(query): Query<ListPostsQuery>,
+) -> impl IntoResponse {
+    let session = match authenticate_webview(&state, &headers) {
+        Ok(session) => session,
+        Err(resp) => return resp,
+    };
+    let stage_filter = query.stage.as_deref().and_then(parse_stage);
+    let allowed_groups = allowed_groups(&session.identity);
+    let keyword_lower = query.keyword.map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty());
+    let date_from_ms = query.date_from_ms;
+    let date_to_ms = query.date_to_ms;
+    let group_filter = query.group_id.filter(|g| !g.trim().is_empty());
+
+    let guard = match state.state.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                "state unavailable",
+            );
+        }
+    };
+
+    let review_ids: Vec<String> = guard
+        .posts
+        .iter()
+        .filter(|(_, meta)| can_access_group(allowed_groups.as_ref(), &meta.group_id))
+        .filter(|(_, meta)| {
+            stage_filter.map(|stage| stage == meta.stage).unwrap_or(true)
+        })
+        .filter(|(_, meta)| {
+            if group_filter.is_none() { return true; }
+            group_filter.as_deref() == Some(meta.group_id.as_str())
+        })
+        .filter(|(_, meta)| {
+            if date_from_ms.is_none() && date_to_ms.is_none() { return true; }
+            if let Some(from) = date_from_ms {
+                if meta.created_at_ms < from { return false; }
+            }
+            if let Some(to) = date_to_ms {
+                if meta.created_at_ms > to { return false; }
+            }
+            true
+        })
+        .filter(|(post_id, meta)| {
+            if keyword_lower.is_none() { return true; }
+            let kw = keyword_lower.as_deref().unwrap();
+            let sender_id = guard.session_ingress.get(&meta.session_id)
+                .and_then(|ids| ids.first())
+                .and_then(|id| guard.ingress_meta.get(id))
+                .map(|ingress| ingress.user_id.clone())
+                .unwrap_or_default();
+            let review_code = meta.review_id
+                .and_then(|id| guard.reviews.get(&id).map(|review| review.review_code));
+            let external_code = guard.external_code_by_post.get(post_id).copied();
+            let preview_text = guard.drafts.get(post_id).and_then(|d| {
+                d.blocks.iter().find_map(|b| match b {
+                    oqqwall_rust_core::draft::DraftBlock::Paragraph { text } => Some(text.to_ascii_lowercase()),
+                    _ => None,
+                })
+            }).unwrap_or_default();
+            sender_id.to_ascii_lowercase().contains(kw)
+                || review_code.map(|c| c.to_string().contains(kw)).unwrap_or(false)
+                || external_code.map(|c| c.to_string().contains(kw)).unwrap_or(false)
+                || preview_text.contains(kw)
+                || meta.group_id.to_ascii_lowercase().contains(kw)
+                || meta.last_error.as_ref().map(|e| e.to_ascii_lowercase().contains(kw)).unwrap_or(false)
+        })
+        .filter_map(|(_, meta)| meta.review_id.map(id_to_string))
+        .collect();
+
+    let total = review_ids.len();
+    (StatusCode::OK, Json(ListReviewIdsResponse { review_ids, total })).into_response()
 }
 
 async fn webview_get_post(

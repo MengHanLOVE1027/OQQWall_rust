@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NButton,
   NCard,
@@ -16,30 +17,41 @@ import {
   PersonCircleOutline as PersonIcon,
   SparklesOutline as SparklesIcon,
 } from '@vicons/ionicons5'
-import { useAuth } from '../../composables/useAuth'
+import { api } from '../../api/client'
+import { setCachedMe } from '../../router'
+import type { MeResponse } from '../../api/types'
 
-const auth = useAuth()
+const router = useRouter()
 const message = useMessage()
+const loginLoading = reactive({ value: false })
 
 const form = reactive({
   username: '',
   password: '',
 })
 
-const greeting = computed(() =>
-  auth.loginLoading.value ? '正在校验登录信息' : '登录审核后台',
-)
-
 async function handleLogin() {
   if (!form.username || !form.password) {
     message.warning('请输入用户名和密码')
     return
   }
+  loginLoading.value = true
   try {
-    await auth.login(form.username, form.password)
+    await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: form.username.trim(),
+        password: form.password,
+      }),
+    })
+    const me = await api<MeResponse>('/auth/me', { method: 'GET' })
+    setCachedMe(me)
     message.success('登录成功')
+    router.replace('/review')
   } catch (e) {
     message.error((e as Error).message)
+  } finally {
+    loginLoading.value = false
   }
 }
 </script>
@@ -69,7 +81,7 @@ async function handleLogin() {
       <n-card class="login-card" size="huge" :bordered="false">
         <div class="card-head">
           <n-tag size="small" round type="success" :bordered="false">管理员登录</n-tag>
-          <h2>{{ greeting }}</h2>
+          <h2>{{ loginLoading.value ? '正在校验登录信息' : '登录审核后台' }}</h2>
           <p>使用已配置的管理员账号登录。</p>
         </div>
 
@@ -96,7 +108,7 @@ async function handleLogin() {
             </n-input>
           </n-form-item>
 
-          <n-button type="primary" block @click="handleLogin" :loading="auth.loginLoading.value" size="large">
+          <n-button type="primary" block @click="handleLogin" :loading="loginLoading.value" size="large">
             <template #icon>
               <n-icon><KeyIcon /></n-icon>
             </template>
@@ -141,7 +153,7 @@ async function handleLogin() {
   padding: 44px;
   background:
     radial-gradient(circle at top right, rgba(59, 130, 246, 0.22), transparent 34%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+    linear-gradient(160deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.94));
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(16px);
 }
@@ -209,7 +221,7 @@ async function handleLogin() {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  background: rgba(255, 248, 238, 0.92);
+  background: rgba(255, 255, 255, 0.96);
   color: #334155;
 }
 
@@ -218,7 +230,7 @@ async function handleLogin() {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 32px;
   line-height: 1.12;
-  color: #221a15;
+  color: #1e293b;
 }
 
 .card-head p {
@@ -232,7 +244,7 @@ async function handleLogin() {
   gap: 6px;
   margin-top: 20px;
   padding-top: 18px;
-  border-top: 1px solid rgba(34, 26, 21, 0.08);
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
   color: rgba(51, 65, 85, 0.56);
   font-size: 12px;
   line-height: 1.7;
@@ -257,17 +269,6 @@ async function handleLogin() {
 
   .hero-points {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .login-card :deep(.n-card__content) {
-    padding-left: 20px;
-    padding-right: 20px;
-  }
-
-  .hero-copy {
-    padding: 28px 20px;
   }
 }
 </style>

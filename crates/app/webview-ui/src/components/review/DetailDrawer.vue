@@ -58,10 +58,7 @@ const confirmState = reactive({
 
 const actionOptions = ACTIONS.map((k) => ({ label: ACTION_LABELS[k], value: k }))
 
-const updateWidth = () => {
-  windowWidth.value = window.innerWidth
-}
-
+const updateWidth = () => { windowWidth.value = window.innerWidth }
 onMounted(() => window.addEventListener('resize', updateWidth))
 onUnmounted(() => window.removeEventListener('resize', updateWidth))
 
@@ -105,26 +102,16 @@ async function copyText(value: string, label: string) {
 
 const actionHelp = computed(() => {
   switch (actionForm.action) {
-    case 'reject':
-      return '可选填写拒绝说明，留空时会直接执行拒绝。'
-    case 'defer':
-      return '稿件会在指定时间后再次进入处理列表。'
-    case 'quick_reply':
-      return '填写已配置的快捷回复键名。'
-    case 'merge':
-      return '将当前稿件合并到目标审核编号。'
-    case 'toggle_anonymous':
-      return '切换当前稿件的匿名状态。'
-    case 'rerender':
-      return '重新生成当前稿件的渲染图。'
-    case 'reply':
-      return '向投稿人发送回复。'
-    case 'comment':
-      return '为当前稿件添加备注。'
-    case 'blacklist':
-      return '将投稿人加入黑名单。'
-    default:
-      return '选择动作后，下方会显示对应参数。'
+    case 'reject': return '可选填写拒绝说明，留空时会直接执行拒绝。'
+    case 'defer': return '稿件会在指定时间后再次进入处理列表。'
+    case 'quick_reply': return '填写已配置的快捷回复键名。'
+    case 'merge': return '将当前稿件合并到目标审核编号。'
+    case 'toggle_anonymous': return '切换当前稿件的匿名状态。'
+    case 'rerender': return '重新生成当前稿件的渲染图。'
+    case 'reply': return '向投稿人发送回复。'
+    case 'comment': return '为当前稿件添加备注。'
+    case 'blacklist': return '将投稿人加入黑名单。'
+    default: return '选择动作后，下方会显示对应参数。'
   }
 })
 
@@ -140,54 +127,40 @@ function buildPayload(action: string) {
 
   if (action === 'reject') {
     const comment = actionForm.comment.trim()
-    if (comment) {
-      payload.comment = comment
-    }
+    if (comment) payload.comment = comment
   }
 
   if (action === 'blacklist') {
     const comment = actionForm.comment.trim()
-    if (!comment) {
-      throw new Error('请填写处理说明')
-    }
+    if (!comment) throw new Error('请填写处理说明')
     payload.comment = comment
   }
 
   if (action === 'comment') {
     const text = actionForm.text.trim() || actionForm.comment.trim()
-    if (!text) {
-      throw new Error('请填写评论内容')
-    }
+    if (!text) throw new Error('请填写评论内容')
     payload.text = text
   }
 
   if (action === 'reply') {
     const text = actionForm.text.trim()
-    if (!text) {
-      throw new Error('请填写回复内容')
-    }
+    if (!text) throw new Error('请填写回复内容')
     payload.text = text
   }
 
   if (action === 'defer') {
-    if (!actionForm.delay_ms || actionForm.delay_ms <= 0) {
-      throw new Error('请填写大于 0 的暂缓时长')
-    }
+    if (!actionForm.delay_ms || actionForm.delay_ms <= 0) throw new Error('请填写大于 0 的暂缓时长')
     payload.delay_ms = actionForm.delay_ms
   }
 
   if (action === 'quick_reply') {
     const key = actionForm.quick_reply_key.trim()
-    if (!key) {
-      throw new Error('请填写快捷回复键名')
-    }
+    if (!key) throw new Error('请填写快捷回复键名')
     payload.quick_reply_key = key
   }
 
   if (action === 'merge') {
-    if (!actionForm.target_review_code) {
-      throw new Error('请填写目标审核编号')
-    }
+    if (!actionForm.target_review_code) throw new Error('请填写目标审核编号')
     payload.target_review_code = actionForm.target_review_code
   }
 
@@ -199,9 +172,7 @@ function requestExecute(actionOverride?: string) {
     message.error('当前稿件无法操作（无 review_id）')
     return
   }
-  if (actionOverride) {
-    actionForm.action = actionOverride
-  }
+  if (actionOverride) actionForm.action = actionOverride
   confirmState.action = actionOverride ?? actionForm.action
   confirmState.show = true
 }
@@ -247,6 +218,7 @@ async function confirmExecute() {
         <n-spin size="large" />
       </div>
       <div v-else-if="detail" class="detail-wrapper">
+        <!-- Hero section -->
         <section class="detail-hero">
           <div>
             <span class="detail-kicker">稿件信息</span>
@@ -254,12 +226,19 @@ async function confirmExecute() {
             <p>{{ detail.sender_id ?? '未知投稿人' }} · {{ formatTime(detail.created_at_ms) }}</p>
           </div>
           <div class="hero-tags">
-            <n-tag :type="detail.stage === 'review_pending' ? 'warning' : 'default'" round>{{ STAGE_LABELS[detail.stage] ?? detail.stage }}</n-tag>
-            <n-tag :type="detail.is_safe ? 'success' : 'error'" round>{{ detail.is_safe ? '安全' : '待核查' }}</n-tag>
-            <n-tag :type="detail.is_anonymous ? 'info' : 'default'" round>{{ detail.is_anonymous ? '匿名' : '非匿名' }}</n-tag>
+            <n-tag :type="detail.stage === 'review_pending' ? 'warning' : 'default'" round>
+              {{ STAGE_LABELS[detail.stage] ?? detail.stage }}
+            </n-tag>
+            <n-tag :type="detail.is_safe ? 'success' : 'error'" round>
+              {{ detail.is_safe ? '安全' : '待核查' }}
+            </n-tag>
+            <n-tag :type="detail.is_anonymous ? 'info' : 'default'" round>
+              {{ detail.is_anonymous ? '匿名' : '非匿名' }}
+            </n-tag>
           </div>
         </section>
 
+        <!-- Utility bar -->
         <section class="utility-bar">
           <div class="utility-group">
             <n-button size="small" :disabled="!props.hasPrev" @click="emit('prev')">上一条</n-button>
@@ -272,6 +251,7 @@ async function confirmExecute() {
           </div>
         </section>
 
+        <!-- Action panel -->
         <section class="action-panel">
           <div class="action-panel-head">
             <div>
@@ -337,11 +317,9 @@ async function confirmExecute() {
           </n-form>
         </section>
 
+        <!-- Info panel -->
         <n-descriptions
-          bordered
-          column="1"
-          size="small"
-          label-placement="left"
+          bordered column="1" size="small" label-placement="left"
           :label-style="{ width: isMobile ? '76px' : '96px' }"
           class="info-panel"
         >
@@ -355,6 +333,7 @@ async function confirmExecute() {
           </n-descriptions-item>
         </n-descriptions>
 
+        <!-- Render preview -->
         <div v-if="detail.render_png_blob_id" class="section">
           <div class="section-head">
             <span class="section-kicker">渲染预览</span>
@@ -363,6 +342,7 @@ async function confirmExecute() {
           <n-image :src="'/api/blobs/' + detail.render_png_blob_id" class="full-width-image" />
         </div>
 
+        <!-- Content blocks -->
         <div class="section">
           <div class="section-head">
             <span class="section-kicker">稿件内容</span>
@@ -384,6 +364,7 @@ async function confirmExecute() {
           </div>
         </div>
 
+        <!-- Error section -->
         <div v-if="detail.last_error" class="section error">
           <div class="section-head">
             <span class="section-kicker">异常记录</span>
@@ -396,15 +377,14 @@ async function confirmExecute() {
     </n-drawer-content>
   </n-drawer>
 
+  <!-- Confirm modal -->
   <n-modal v-model:show="confirmState.show" preset="card" class="confirm-modal" :mask-closable="false">
     <div class="confirm-head">
       <span class="confirm-kicker">确认操作</span>
       <h3>{{ ACTION_LABELS[confirmState.action] }} #{{ props.detail?.review_code ?? props.detail?.external_code ?? '-' }}</h3>
     </div>
     <p class="confirm-meta">确认后会立即提交到后端处理。</p>
-    <n-alert type="warning" :bordered="false">
-      请确认当前稿件和操作类型无误。
-    </n-alert>
+    <n-alert type="warning" :bordered="false">请确认当前稿件和操作类型无误。</n-alert>
     <div class="confirm-actions">
       <n-button @click="confirmState.show = false">取消</n-button>
       <n-button type="primary" :loading="submitting" @click="confirmExecute">确认执行</n-button>
@@ -582,12 +562,12 @@ async function confirmExecute() {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.8;
-  color: #2f261f;
+  color: #334155;
 }
 
 .media-header {
   font-size: 12px;
-  color: rgba(47, 38, 31, 0.52);
+  color: rgba(51, 65, 85, 0.52);
   margin-bottom: 8px;
   letter-spacing: 0.04em;
 }

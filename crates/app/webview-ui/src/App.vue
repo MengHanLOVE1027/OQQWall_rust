@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { KeepAlive, computed, onMounted, ref } from 'vue'
+import { computed } from 'vue'
+import { RouterView, useRouter } from 'vue-router'
 import {
   NConfigProvider,
   NGlobalStyle,
@@ -8,13 +9,9 @@ import {
   zhCN,
 } from 'naive-ui'
 import MainLayout from './components/layout/MainLayout.vue'
-import LoginForm from './components/business/LoginForm.vue'
-import ReviewWorkspace from './components/business/ReviewWorkspace.vue'
-import StatsDashboard from './components/business/StatsDashboard.vue'
-import { useAuth } from './composables/useAuth'
 
-const auth = useAuth()
-const currentView = ref('review')
+const router = useRouter()
+const isLoginPage = computed(() => router.currentRoute.value.name === 'login')
 
 const themeOverrides = computed(() => ({
   common: {
@@ -42,10 +39,6 @@ const themeOverrides = computed(() => ({
     fontFamilyMono: '"Fira Code", "Cascadia Code", monospace',
   },
 }))
-
-onMounted(() => {
-  auth.checkSession()
-})
 </script>
 
 <template>
@@ -57,12 +50,10 @@ onMounted(() => {
         <div class="ambient ambient-right"></div>
         <div class="grain-layer"></div>
         <div class="app-stage">
-          <LoginForm v-if="!auth.authed.value" />
-          <MainLayout v-else v-model:activeKey="currentView">
-            <KeepAlive>
-              <component :is="currentView === 'stats' ? StatsDashboard : ReviewWorkspace" />
-            </KeepAlive>
+          <MainLayout v-if="!isLoginPage">
+            <RouterView />
           </MainLayout>
+          <RouterView v-else />
         </div>
       </div>
     </n-message-provider>

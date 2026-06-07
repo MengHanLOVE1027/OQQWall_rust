@@ -10,7 +10,7 @@ mod webview;
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        oqqwall_rust_infra::debug_log::log(format_args!($($arg)*));
+        oqqwall_rust_infra::debug_log::info(format_args!($($arg)*));
     };
 }
 
@@ -34,24 +34,24 @@ async fn main() {
     debug_log!("debug build: args={:?}", args);
     if args.len() > 1 && (args[1] == "oobe" || args[1] == "--oobe") {
         if let Err(err) = oobe::run(&args[1..]) {
-            eprintln!("{}", err);
+            oqqwall_rust_infra::debug_log::error(format_args!("OOBE 失败: {}", err));
             std::process::exit(1);
         }
         return;
     }
     if args.iter().any(|arg| arg == "--tui") {
         if let Err(err) = oqqwall_tui::run_cli(&args) {
-            eprintln!("tui: {err}");
+            oqqwall_rust_infra::debug_log::error(format_args!("TUI 失败: {err}"));
             std::process::exit(1);
         }
         return;
     }
 
-    println!("系统已启动");
+    oqqwall_rust_infra::debug_log::success(format_args!("系统已启动"));
     let app_config = match load_app_config_with_auto_oobe() {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("{err}");
+            oqqwall_rust_infra::debug_log::error(format_args!("加载配置失败: {err}"));
             std::process::exit(1);
         }
     };
@@ -87,7 +87,7 @@ async fn main() {
         app_config.webview_port
     );
     if let Err(err) = spawn_napcat_drivers(&handle, &app_config) {
-        eprintln!("启动失败: {}", err);
+        oqqwall_rust_infra::debug_log::error(format_args!("启动失败: {}", err));
         std::process::exit(1);
     }
     debug_log!("drivers spawned");

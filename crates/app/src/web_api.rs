@@ -34,7 +34,7 @@ use crate::engine::EngineHandle;
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        oqqwall_rust_infra::debug_log::log(format_args!($($arg)*));
+        oqqwall_rust_infra::debug_log::info(format_args!($($arg)*));
     };
 }
 
