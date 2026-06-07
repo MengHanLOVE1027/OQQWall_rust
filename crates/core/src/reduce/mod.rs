@@ -461,6 +461,12 @@ fn reduce_review(state: &mut StateView, event: &ReviewEvent) {
                 state.update_post_stage(post_id, stage);
             }
         }
+        ReviewEvent::ReviewDisassociated { post_id } => {
+            if let Some(post) = state.posts.get_mut(post_id) {
+                post.review_id = None;
+                post.stage = PostStage::Deleted;
+            }
+        }
         ReviewEvent::ReviewExternalNumberSet {
             group_id,
             next_number,

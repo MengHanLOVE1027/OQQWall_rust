@@ -220,6 +220,10 @@ pub enum ReviewEvent {
         review_id: ReviewId,
         text: String,
     },
+    /// 彻底删除：解除 review 与 post 的关联，帖子将从审核列表消失
+    ReviewDisassociated {
+        post_id: PostId,
+    },
     ReviewReplyRequested {
         review_id: ReviewId,
         text: String,

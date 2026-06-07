@@ -89,12 +89,8 @@ pub fn decide_review_action(
                 .map(|c| format!("彻底删除，理由：{}", c))
                 .unwrap_or_else(|| "彻底删除，理由：无".to_string());
             let mut events = vec![
-                Event::Review(ReviewEvent::ReviewDecisionRecorded {
-                    review_id,
-                    decision: ReviewDecision::Deleted,
-                    decided_by: cmd.operator_id.clone(),
-                    decided_at_ms: cmd.now_ms,
-                }),
+                // 解除 review 关联 + 标记 Deleted → 帖子从审核列表彻底消失
+                Event::Review(ReviewEvent::ReviewDisassociated { post_id }),
                 Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }),
                 Event::Review(ReviewEvent::ReviewCommentAdded {
                     review_id,

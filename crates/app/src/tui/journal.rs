@@ -1933,6 +1933,10 @@ fn summary_parts(event: &Event) -> (&'static str, String) {
                     external_code
                 ),
             ),
+            ReviewEvent::ReviewDisassociated { post_id } => (
+                "Review.Disassociated",
+                format!("post={}", short_id(*post_id)),
+            ),
             ReviewEvent::ReviewInfoSynced {
                 review_id,
                 post_id,

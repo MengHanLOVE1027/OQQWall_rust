@@ -35,7 +35,7 @@ const groupOptions = computed(() => {
 
 const visiblePosts = computed(() => {
   let items = [...review.posts.value]
-  if (review.stage.value === '__active__') items = items.filter(p => !['rejected','skipped','failed'].includes(p.stage))
+  if (review.stage.value === '__active__') items = items.filter(p => !['rejected','deleted','skipped','failed'].includes(p.stage))
   if (groupFilter.value !== 'all') items = items.filter(p => p.group_id === groupFilter.value)
   if (onlyError.value) items = items.filter(p => !!p.last_error)
   if (onlyActionable.value) items = items.filter(p => !!p.review_id)
