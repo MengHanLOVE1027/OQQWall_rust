@@ -1770,7 +1770,7 @@ fn draw_watermark_layer(
     let mut rng = DeterministicRng::new(watermark_seed(header, text));
     let cols = ((width as f32) / tile).ceil().max(1.0) as i32 + 1;
     let rows = ((height as f32) / tile).ceil().max(1.0) as i32 + 1;
-    let first_cx = width as f32 * 0.5 - ((cols - 1) as f32 * tile) * 0.5;
+    let first_cx = width as f32 * 0.5 - ((cols - 1) as f32 * tile) * 0.5 + 240.0;
     let first_cy = height as f32 * 0.5 - ((rows - 1) as f32 * tile) * 0.5;
 
     for row in 0..rows {

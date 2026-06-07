@@ -10,7 +10,7 @@ import { STAGE_LABELS } from '../../api/types'
 import type { Stage } from '../../api/types'
 
 const props = defineProps<{
-  stage: Stage
+  stage: Stage | ''
   groupFilter: string
   sortMode: string
   keyword: string
@@ -21,7 +21,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:stage', v: Stage): void
+  (e: 'update:stage', v: Stage | ''): void
   (e: 'update:groupFilter', v: string): void
   (e: 'update:sortMode', v: string): void
   (e: 'update:keyword', v: string): void
@@ -34,7 +34,10 @@ const emit = defineEmits<{
   (e: 'toggleSelectAll'): void
 }>()
 
-const stageOptions = Object.keys(STAGE_LABELS).map((k) => ({ label: STAGE_LABELS[k], value: k }))
+const stageOptions = [
+  { label: '全部状态', value: '' },
+  ...Object.keys(STAGE_LABELS).map((k) => ({ label: STAGE_LABELS[k], value: k })),
+]
 const sortOptions = [
   { label: '最新投稿优先', value: 'newest' },
   { label: '最早投稿优先', value: 'oldest' },

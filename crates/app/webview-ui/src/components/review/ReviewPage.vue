@@ -150,6 +150,10 @@ async function handleSelectAllAcrossPages() {
   await review.selectAllAcrossPages()
 }
 
+async function handleSelectAllPosts() {
+  await review.selectAllPosts()
+}
+
 function handleResetFilters() {
   review.stage.value = 'review_pending'
   review.keyword.value = ''
@@ -280,7 +284,7 @@ onBeforeUnmount(() => {
         :onlyActionable="onlyActionable"
         :autoRefresh="autoRefresh"
         :groupOptions="groupOptions"
-        @update:stage="review.stage.value = $event; loadAll()"
+        @update:stage="(v: Stage | '') => { review.stage.value = v; loadAll() }"
         @update:groupFilter="groupFilter = $event"
         @update:sortMode="sortMode = $event"
         @update:keyword="review.keyword.value = $event"
@@ -304,16 +308,26 @@ onBeforeUnmount(() => {
         <n-tag :bordered="false" round>上次刷新 {{ formattedUpdatedAt }}</n-tag>
       </div>
 
-      <!-- Select all banner -->
+      <!-- Select all banner: always visible when there are selectable posts -->
       <div v-if="!review.selectAllMode.value && visibleSelectableReviewIds.length > 0" class="select-all-hint">
-        <span>已选择 {{ review.selectedReviewIds.value.length }} 条当前页稿件。</span>
-        <n-button size="tiny" type="primary" ghost @click="handleSelectAllAcrossPages">
-          选择全部匹配稿件
-        </n-button>
+        <span>{{ review.selectedReviewIds.value.length > 0 ? `已选择 ${review.selectedReviewIds.value.length} 条稿件。` : '快捷批量操作：' }}</span>
+        <div class="select-all-hint-actions">
+          <n-button size="tiny" type="primary" ghost @click="handleSelectAllAcrossPages">
+            选择当前筛选条件
+          </n-button>
+          <n-button size="tiny" type="primary" @click="handleSelectAllPosts">
+            选择所有稿件（不限状态）
+          </n-button>
+        </div>
       </div>
       <div v-if="review.selectAllMode.value" class="select-all-active">
-        <span>已选择 <b>全部 {{ review.selectAllTotal.value }}</b> 条匹配稿件。</span>
-        <n-button size="tiny" @click="review.clearSelection()">取消全选</n-button>
+        <span>已选择 <b>全部 {{ review.selectAllTotal.value }}</b> 条稿件。</span>
+        <div class="select-all-hint-actions">
+          <n-button size="tiny" type="primary" ghost @click="handleSelectAllPosts">
+            不限筛选，选择全部
+          </n-button>
+          <n-button size="tiny" @click="review.clearSelection()">取消全选</n-button>
+        </div>
       </div>
 
       <BatchBar
@@ -540,6 +554,12 @@ onBeforeUnmount(() => {
   color: rgba(30, 41, 59, 0.7);
 }
 
+.select-all-hint-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .select-all-active {
   display: flex;
   align-items: center;
@@ -639,6 +659,10 @@ onBeforeUnmount(() => {
   .select-all-active {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .select-all-hint-actions {
+    justify-content: flex-end;
   }
 }
 </style>

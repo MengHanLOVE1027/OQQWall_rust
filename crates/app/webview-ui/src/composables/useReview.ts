@@ -9,7 +9,7 @@ export function useReview() {
   const detailLoading = ref(false)
   const actionLoading = ref(false)
 
-  const stage = ref<Stage>('review_pending')
+  const stage = ref<Stage | ''>('review_pending')
   const keyword = ref('')
   const posts = ref<PostItem[]>([])
   const page = ref(0)
@@ -51,7 +51,9 @@ export function useReview() {
 
   function buildQueryParams(): URLSearchParams {
     const params = new URLSearchParams()
-    params.set('stage', stage.value)
+    if (stage.value) {
+      params.set('stage', stage.value)
+    }
     params.set('limit', String(pageSize.value))
     params.set('cursor', String(page.value * pageSize.value))
     if (keyword.value.trim()) {
@@ -166,7 +168,29 @@ export function useReview() {
       if (result.total === 0) {
         message.info('没有可选择的稿件')
       } else {
-        message.success(`已选择全部 ${result.total} 条稿件`)
+        message.success(`已选择全部 ${result.total} 条匹配稿件`)
+      }
+    } catch (err) {
+      message.error((err as Error).message)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /** Fetch ALL review IDs regardless of filter (全系统选择) */
+  async function selectAllPosts() {
+    loading.value = true
+    try {
+      const result = await api<{ review_ids: string[]; total: number }>(
+        '/api/reviews/ids',
+      )
+      selectedReviewIds.value = result.review_ids
+      selectAllMode.value = true
+      selectAllTotal.value = result.total
+      if (result.total === 0) {
+        message.info('系统中没有可选择的稿件')
+      } else {
+        message.success(`已选择全部 ${result.total} 条稿件（不限筛选条件）`)
       }
     } catch (err) {
       message.error((err as Error).message)
@@ -220,6 +244,7 @@ export function useReview() {
     refreshDetail,
     toggleSelectAll,
     selectAllAcrossPages,
+    selectAllPosts,
     clearSelection,
     toggleOneSelection,
     goToPage,
