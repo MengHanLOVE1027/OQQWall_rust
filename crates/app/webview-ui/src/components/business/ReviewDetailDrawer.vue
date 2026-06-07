@@ -441,9 +441,9 @@ async function confirmExecute() {
   justify-content: space-between;
   gap: 18px;
   padding: 24px;
-  background: linear-gradient(135deg, rgba(31, 143, 106, 0.16), rgba(53, 94, 123, 0.12));
-  border: 1px solid rgba(31, 143, 106, 0.12);
-  color: #261d17;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.16), rgba(99, 102, 241, 0.12));
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  color: #1e293b;
 }
 
 .detail-kicker,
@@ -455,7 +455,7 @@ async function confirmExecute() {
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(38, 29, 23, 0.46);
+  color: rgba(30, 41, 59, 0.46);
 }
 
 .detail-hero h2 {
@@ -463,12 +463,12 @@ async function confirmExecute() {
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(34px, 6vw, 50px);
   line-height: 1;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .detail-hero p {
   margin: 10px 0 0;
-  color: rgba(38, 29, 23, 0.72);
+  color: rgba(30, 41, 59, 0.72);
 }
 
 .hero-tags {
@@ -483,8 +483,8 @@ async function confirmExecute() {
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
-  background: rgba(255, 250, 242, 0.92);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
 }
 
@@ -496,8 +496,8 @@ async function confirmExecute() {
 
 .action-panel {
   padding: 22px;
-  background: rgba(255, 250, 242, 0.96);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
 }
 
@@ -512,7 +512,7 @@ async function confirmExecute() {
   margin: 0;
   font-size: 22px;
   line-height: 1.3;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .quick-actions {
@@ -524,7 +524,7 @@ async function confirmExecute() {
 
 .action-help {
   margin: -2px 0 14px;
-  color: rgba(38, 29, 23, 0.62);
+  color: rgba(30, 41, 59, 0.62);
   line-height: 1.7;
   font-size: 13px;
 }
@@ -535,15 +535,15 @@ async function confirmExecute() {
 }
 
 .info-panel {
-  background: rgba(255, 250, 242, 0.94);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
 }
 
 .section {
   padding: 22px;
-  background: rgba(255, 250, 242, 0.94);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
 }
 
@@ -554,7 +554,7 @@ async function confirmExecute() {
 .section-head h4 {
   margin: 0;
   font-size: 22px;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .full-width-image {
@@ -570,8 +570,8 @@ async function confirmExecute() {
 }
 
 .block-item {
-  background: rgba(28, 26, 24, 0.03);
-  border: 1px solid rgba(28, 26, 24, 0.08);
+  background: rgba(30, 41, 59, 0.03);
+  border: 1px solid rgba(30, 41, 59, 0.08);
   padding: 14px;
   border-radius: 18px;
   margin-bottom: 10px;
@@ -593,13 +593,13 @@ async function confirmExecute() {
 }
 
 .download-link {
-  color: #1f8f6a;
+  color: #3b82f6;
   text-decoration: none;
 }
 
 .section.error pre {
-  color: #9c3427;
-  background: rgba(184, 77, 58, 0.08);
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.08);
   padding: 14px;
   border-radius: 16px;
   white-space: pre-wrap;
@@ -618,12 +618,12 @@ async function confirmExecute() {
 
 .confirm-head h3 {
   margin: 8px 0 6px;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .confirm-meta {
   margin: 0 0 14px;
-  color: rgba(38, 29, 23, 0.62);
+  color: rgba(30, 41, 59, 0.62);
   line-height: 1.7;
 }
 

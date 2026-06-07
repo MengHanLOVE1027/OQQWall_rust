@@ -18,26 +18,26 @@ const currentView = ref('review')
 
 const themeOverrides = computed(() => ({
   common: {
-    primaryColor: '#1f8f6a',
-    primaryColorHover: '#167b5b',
-    primaryColorPressed: '#0f5f47',
-    primaryColorSuppl: '#2aa77f',
-    infoColor: '#355e7b',
-    successColor: '#1f8f6a',
-    warningColor: '#c87a2a',
-    errorColor: '#b84d3a',
+    primaryColor: '#3b82f6',
+    primaryColorHover: '#2563eb',
+    primaryColorPressed: '#1d4ed8',
+    primaryColorSuppl: '#60a5fa',
+    infoColor: '#6366f1',
+    successColor: '#10b981',
+    warningColor: '#f59e0b',
+    errorColor: '#ef4444',
     borderRadius: '18px',
     borderRadiusSmall: '12px',
-    cardColor: '#fffdfa',
-    bodyColor: '#f6f1e8',
-    modalColor: '#fffaf2',
-    textColorBase: '#261d17',
-    textColor1: '#261d17',
-    textColor2: 'rgba(38, 29, 23, 0.78)',
-    textColor3: 'rgba(38, 29, 23, 0.58)',
-    placeholderColor: 'rgba(38, 29, 23, 0.38)',
-    borderColor: 'rgba(75, 62, 53, 0.14)',
-    dividerColor: 'rgba(75, 62, 53, 0.12)',
+    cardColor: '#ffffff',
+    bodyColor: '#f0f4f8',
+    modalColor: '#ffffff',
+    textColorBase: '#1e293b',
+    textColor1: '#1e293b',
+    textColor2: 'rgba(30, 41, 59, 0.78)',
+    textColor3: 'rgba(30, 41, 59, 0.55)',
+    placeholderColor: 'rgba(30, 41, 59, 0.35)',
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+    dividerColor: 'rgba(148, 163, 184, 0.15)',
     fontFamily: '"Lato", "PingFang SC", "Microsoft YaHei", sans-serif',
     fontFamilyMono: '"Fira Code", "Cascadia Code", monospace',
   },
@@ -72,24 +72,24 @@ onMounted(() => {
 <style>
 :root {
   color-scheme: light;
-  --app-bg: #f3ede3;
-  --app-page: #f6f1e8;
-  --app-page-strong: #f9f6ef;
-  --app-panel: rgba(33, 29, 25, 0.94);
-  --app-panel-strong: rgba(24, 22, 19, 0.98);
-  --app-card: rgba(255, 250, 242, 0.96);
-  --app-card-soft: rgba(246, 239, 228, 0.9);
-  --app-border: rgba(220, 199, 166, 0.18);
-  --app-border-strong: rgba(75, 62, 53, 0.12);
-  --app-text: #261d17;
-  --app-text-muted: rgba(38, 29, 23, 0.62);
-  --app-text-on-dark: #f6ecda;
-  --app-text-on-dark-muted: rgba(246, 236, 218, 0.66);
-  --app-accent: #1f8f6a;
-  --app-warning: #c87a2a;
-  --app-danger: #b84d3a;
-  --app-shadow: 0 26px 70px rgba(22, 16, 11, 0.18);
-  --app-shadow-soft: 0 18px 40px rgba(22, 16, 11, 0.1);
+  --app-bg: #eef2f6;
+  --app-page: #f0f4f8;
+  --app-page-strong: #f8fafc;
+  --app-panel: rgba(30, 41, 59, 0.94);
+  --app-panel-strong: rgba(15, 23, 42, 0.98);
+  --app-card: #ffffff;
+  --app-card-soft: rgba(241, 245, 249, 0.9);
+  --app-border: rgba(148, 163, 184, 0.2);
+  --app-border-strong: rgba(148, 163, 184, 0.16);
+  --app-text: #1e293b;
+  --app-text-muted: rgba(30, 41, 59, 0.62);
+  --app-text-on-dark: #e2e8f0;
+  --app-text-on-dark-muted: rgba(226, 232, 240, 0.66);
+  --app-accent: #3b82f6;
+  --app-warning: #f59e0b;
+  --app-danger: #ef4444;
+  --app-shadow: 0 26px 70px rgba(15, 23, 42, 0.12);
+  --app-shadow-soft: 0 18px 40px rgba(15, 23, 42, 0.06);
 }
 
 * {
@@ -107,9 +107,9 @@ body {
   padding: 0;
   font-family: "Lato", "PingFang SC", "Microsoft YaHei", sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(31, 143, 106, 0.12), transparent 24%),
-    radial-gradient(circle at 80% 10%, rgba(200, 122, 42, 0.1), transparent 22%),
-    linear-gradient(180deg, #f7f3eb 0%, #f2ebdf 100%);
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 30%),
+    radial-gradient(circle at 80% 10%, rgba(99, 102, 241, 0.06), transparent 28%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f6 100%);
   color: var(--app-text);
 }
 
@@ -143,7 +143,7 @@ a {
   left: -10vw;
   width: 28vw;
   height: 28vw;
-  background: radial-gradient(circle, rgba(31, 143, 106, 0.16), transparent 65%);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.12), transparent 65%);
 }
 
 .ambient-right {
@@ -151,7 +151,7 @@ a {
   bottom: 10vh;
   width: 32vw;
   height: 32vw;
-  background: radial-gradient(circle, rgba(200, 122, 42, 0.12), transparent 64%);
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.08), transparent 64%);
 }
 
 .grain-layer {

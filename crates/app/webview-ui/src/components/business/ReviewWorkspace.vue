@@ -166,6 +166,8 @@ function handleResetFilters() {
   sortMode.value = 'newest'
   onlyError.value = false
   onlyActionable.value = false
+  review.page.value = 0
+  review.search()
 }
 
 function requestQuickAction(post: PostItem, action: string) {
@@ -283,7 +285,12 @@ onBeforeUnmount(() => {
             placeholder="搜索编号、分组、投稿人、错误或预览文本"
             class="search-input"
             clearable
-          />
+            @keyup.enter="review.search()"
+          >
+            <template #suffix>
+              <n-button size="tiny" @click="review.search()">搜索</n-button>
+            </template>
+          </n-input>
         </div>
 
         <div class="toolbar-actions">
@@ -330,6 +337,29 @@ onBeforeUnmount(() => {
     </n-card>
 
     <div class="list-content">
+      <!-- Pagination top -->
+      <div v-if="review.totalCount.value > 0" class="pagination-bar top">
+        <div class="page-info">
+          第 {{ review.page.value + 1 }}/{{ review.totalPages.value }} 页，共 {{ review.totalCount.value }} 条
+          <n-select
+            v-model:value="review.pageSize.value"
+            size="tiny"
+            :options="[
+              { label: '20条/页', value: 20 },
+              { label: '50条/页', value: 50 },
+              { label: '100条/页', value: 100 },
+              { label: '200条/页', value: 200 },
+            ]"
+            style="width: 100px; display: inline-flex; margin-left: 12px"
+            @update:value="review.goToPage(0)"
+          />
+        </div>
+        <div class="page-actions">
+          <n-button size="tiny" :disabled="review.page.value === 0" @click="review.prevPage()">上一页</n-button>
+          <n-button size="tiny" :disabled="review.page.value >= review.totalPages.value - 1" @click="review.nextPage()">下一页</n-button>
+        </div>
+      </div>
+
       <div v-if="review.loading.value && review.posts.value.length === 0" class="center-msg">
         <n-spin size="large" />
       </div>
@@ -397,6 +427,17 @@ onBeforeUnmount(() => {
           </n-card>
         </article>
       </div>
+
+      <!-- Pagination bottom -->
+      <div v-if="review.totalCount.value > 0 && visiblePosts.length > 5" class="pagination-bar bottom">
+        <div class="page-info">
+          第 {{ review.page.value + 1 }}/{{ review.totalPages.value }} 页，共 {{ review.totalCount.value }} 条
+        </div>
+        <div class="page-actions">
+          <n-button size="tiny" :disabled="review.page.value === 0" @click="review.prevPage()">上一页</n-button>
+          <n-button size="tiny" :disabled="review.page.value >= review.totalPages.value - 1" @click="review.nextPage()">下一页</n-button>
+        </div>
+      </div>
     </div>
 
     <ReviewDetailDrawer
@@ -454,7 +495,7 @@ onBeforeUnmount(() => {
 .hero-metrics {
   border-radius: 26px;
   padding: 24px;
-  background: rgba(255, 250, 242, 0.88);
+  background: rgba(255, 255, 255, 0.88);
   border: 1px solid var(--app-border-strong);
   box-shadow: var(--app-shadow-soft);
 }
@@ -462,7 +503,7 @@ onBeforeUnmount(() => {
 .hero-kicker {
   display: inline-block;
   margin-bottom: 12px;
-  color: rgba(38, 29, 23, 0.46);
+  color: rgba(30, 41, 59, 0.46);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-size: 11px;
@@ -474,13 +515,13 @@ onBeforeUnmount(() => {
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(28px, 3.2vw, 40px);
   line-height: 1.12;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .hero-copy p {
   max-width: 42rem;
   margin: 14px 0 0;
-  color: rgba(38, 29, 23, 0.64);
+  color: rgba(30, 41, 59, 0.64);
   line-height: 1.72;
 }
 
@@ -494,8 +535,8 @@ onBeforeUnmount(() => {
 .metric-card {
   padding: 16px 18px;
   border-radius: 20px;
-  background: rgba(244, 237, 226, 0.8);
-  border: 1px solid rgba(75, 62, 53, 0.08);
+  background: rgba(241, 245, 249, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.08);
   min-height: 126px;
 }
 
@@ -505,7 +546,7 @@ onBeforeUnmount(() => {
 }
 
 .metric-card span {
-  color: rgba(38, 29, 23, 0.58);
+  color: rgba(30, 41, 59, 0.58);
   font-size: 12px;
 }
 
@@ -514,30 +555,30 @@ onBeforeUnmount(() => {
   margin: 12px 0 8px;
   font-size: 30px;
   line-height: 1;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .metric-card small {
-  color: rgba(38, 29, 23, 0.54);
+  color: rgba(30, 41, 59, 0.54);
   line-height: 1.6;
 }
 
 .metric-card[data-tone="success"] {
-  box-shadow: inset 0 0 0 1px rgba(31, 143, 106, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.14);
 }
 
 .metric-card[data-tone="error"] {
-  box-shadow: inset 0 0 0 1px rgba(184, 77, 58, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.14);
 }
 
 .metric-card[data-tone="warning"] {
-  box-shadow: inset 0 0 0 1px rgba(200, 122, 42, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.14);
 }
 
 .toolbar-card {
   flex-shrink: 0;
   border-radius: 26px;
-  background: rgba(255, 250, 242, 0.94);
+  background: rgba(255, 255, 255, 0.94);
   box-shadow: var(--app-shadow);
 }
 
@@ -570,14 +611,14 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  color: rgba(38, 29, 23, 0.72);
+  color: rgba(30, 41, 59, 0.72);
 }
 
 .toolbar-switch {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: rgba(38, 29, 23, 0.72);
+  color: rgba(30, 41, 59, 0.72);
   font-size: 13px;
 }
 
@@ -600,9 +641,9 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 14px 16px;
   border-radius: 18px;
-  background: linear-gradient(90deg, rgba(31, 143, 106, 0.08), rgba(53, 94, 123, 0.04));
-  border: 1px solid rgba(31, 143, 106, 0.12);
-  color: #2a211b;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08), rgba(99, 102, 241, 0.04));
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  color: #334155;
   font-size: 13px;
 }
 
@@ -634,7 +675,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   border-radius: 24px;
-  background: rgba(255, 250, 242, 0.88);
+  background: rgba(255, 255, 255, 0.88);
   border: 1px solid var(--app-border-strong);
 }
 
@@ -642,14 +683,14 @@ onBeforeUnmount(() => {
   height: 100%;
   border-radius: 22px;
   overflow: hidden;
-  background: rgba(255, 250, 242, 0.96);
+  background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--app-shadow-soft);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
 .post-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 20px 34px rgba(22, 16, 11, 0.14);
+  box-shadow: 0 20px 34px rgba(15, 23, 42, 0.14);
 }
 
 .card-header {
@@ -663,13 +704,13 @@ onBeforeUnmount(() => {
   font-size: 24px;
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 700;
-  color: #201812;
+  color: #1e293b;
 }
 
 .card-subhead {
   margin: 6px 0 0;
   font-size: 12px;
-  color: rgba(32, 24, 18, 0.62);
+  color: rgba(30, 41, 59, 0.62);
 }
 
 .status-tag {
@@ -691,9 +732,9 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   overflow: hidden;
   background:
-    linear-gradient(160deg, rgba(28, 26, 24, 0.05), rgba(28, 26, 24, 0.01)),
-    linear-gradient(135deg, rgba(31, 143, 106, 0.06), rgba(200, 122, 42, 0.05));
-  border: 1px solid rgba(32, 24, 18, 0.06);
+    linear-gradient(160deg, rgba(30, 41, 59, 0.05), rgba(30, 41, 59, 0.01)),
+    linear-gradient(135deg, rgba(59, 130, 246, 0.06), rgba(245, 158, 11, 0.05));
+  border: 1px solid rgba(30, 41, 59, 0.06);
 }
 
 .preview-img {
@@ -711,7 +752,7 @@ onBeforeUnmount(() => {
 .preview-text {
   padding: 14px;
   font-size: 13px;
-  color: #332821;
+  color: #334155;
   line-height: 1.65;
   min-height: 88px;
   overflow: hidden;
@@ -727,7 +768,7 @@ onBeforeUnmount(() => {
   place-items: center;
   padding: 16px;
   text-align: center;
-  color: rgba(51, 40, 33, 0.56);
+  color: rgba(51, 65, 85, 0.56);
   line-height: 1.7;
 }
 
@@ -737,28 +778,62 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   font-size: 12px;
-  color: rgba(42, 33, 27, 0.62);
+  color: rgba(51, 65, 85, 0.62);
 }
 
 .error-msg {
   margin-top: 12px;
   padding: 10px 12px;
   border-radius: 14px;
-  background: rgba(184, 77, 58, 0.08);
-  color: #9c3427;
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
   font-size: 12px;
   line-height: 1.6;
 }
 
 .no-action {
   font-size: 12px;
-  color: rgba(42, 33, 27, 0.4);
+  color: rgba(51, 65, 85, 0.4);
   text-align: center;
 }
 
 .action-tip {
-  color: rgba(42, 33, 27, 0.52);
+  color: rgba(51, 65, 85, 0.52);
   font-size: 12px;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--app-border-strong);
+  margin-bottom: 14px;
+}
+
+.pagination-bar.top {
+  margin-bottom: 14px;
+}
+
+.pagination-bar.bottom {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.page-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(30, 41, 59, 0.7);
+}
+
+.page-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .confirm-modal {
@@ -767,19 +842,19 @@ onBeforeUnmount(() => {
 
 .confirm-head h3 {
   margin: 8px 0 6px;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .confirm-kicker {
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(38, 29, 23, 0.46);
+  color: rgba(30, 41, 59, 0.46);
 }
 
 .confirm-meta {
   margin: 0 0 14px;
-  color: rgba(38, 29, 23, 0.62);
+  color: rgba(30, 41, 59, 0.62);
   line-height: 1.7;
 }
 

@@ -40,6 +40,22 @@ export interface StatsResponse {
   today_count: number
   total_count: number
   stage_breakdown: Record<string, number>
+  daily_trend: DailyTrendItem[]
+  hourly_distribution: HourlyDistItem[]
+  avg_review_time_ms: number | null
+}
+
+export interface DailyTrendItem {
+  date: string
+  submitted: number
+  approved: number
+  rejected: number
+  deleted: number
+}
+
+export interface HourlyDistItem {
+  hour: number
+  count: number
 }
 
 export interface PostDetail {

@@ -148,4 +148,10 @@ pub enum GlobalAction {
     },
     SelfCheck,
     SystemRepair,
+    SubmissionList,
+    SubmissionListNext,
+    SubmissionListPrev,
+    SubmissionSearch {
+        query: String,
+    },
 }

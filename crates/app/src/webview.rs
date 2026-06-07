@@ -104,6 +104,18 @@ struct ListPostsQuery {
     cursor: Option<usize>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    keyword: Option<String>,
+    #[serde(default)]
+    date_from_ms: Option<i64>,
+    #[serde(default)]
+    date_to_ms: Option<i64>,
+    #[serde(default)]
+    group_id: Option<String>,
+    #[serde(default)]
+    sort_by: Option<String>,
+    #[serde(default)]
+    sort_order: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -133,6 +145,26 @@ struct StatsResponse {
     today_count: usize,
     total_count: usize,
     stage_breakdown: HashMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    daily_trend: Vec<DailyTrendItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hourly_distribution: Vec<HourlyDistItem>,
+    avg_review_time_ms: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct DailyTrendItem {
+    date: String,
+    submitted: usize,
+    approved: usize,
+    rejected: usize,
+    deleted: usize,
+}
+
+#[derive(Serialize)]
+struct HourlyDistItem {
+    hour: u32,
+    count: usize,
 }
 
 #[derive(Serialize)]
@@ -425,11 +457,16 @@ async fn webview_get_stats(
     let mut today_count = 0;
     let mut total_count = 0;
     let mut stage_breakdown = HashMap::new();
+    let mut daily_trend: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
+    let mut hourly_dist: HashMap<u32, usize> = HashMap::new();
+    let mut total_review_time_ms: i64 = 0;
+    let mut total_reviewed_count: usize = 0;
 
     let now_ms = now_ms();
     let day_start_ms = now_ms - (now_ms % 86400000);
+    let seven_days_ago_ms = day_start_ms - 6 * 86400000;
 
-    for (_, meta) in &guard.posts {
+    for (_post_id, meta) in &guard.posts {
         if !can_access_group(allowed_groups.as_ref(), &meta.group_id) {
             continue;
         }
@@ -442,7 +479,76 @@ async fn webview_get_stats(
         }
         let stage_str = stage_to_string(meta.stage);
         *stage_breakdown.entry(stage_str).or_insert(0) += 1;
+
+        // Daily trend (last 7 days)
+        if meta.created_at_ms >= seven_days_ago_ms {
+            let date_key = ms_to_date_string(meta.created_at_ms);
+            let entry = daily_trend.entry(date_key).or_insert((0, 0, 0, 0));
+            entry.0 = entry.0.saturating_add(1); // submitted
+            // Check review decision
+            if let Some(review_id) = meta.review_id {
+                if let Some(review) = guard.reviews.get(&review_id) {
+                    match review.decision {
+                        Some(oqqwall_rust_core::event::ReviewDecision::Approved) => {
+                            entry.1 = entry.1.saturating_add(1);
+                        }
+                        Some(oqqwall_rust_core::event::ReviewDecision::Rejected) => {
+                            entry.2 = entry.2.saturating_add(1);
+                        }
+                        Some(oqqwall_rust_core::event::ReviewDecision::Deleted) => {
+                            entry.3 = entry.3.saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                    // Review efficiency
+                    if let (Some(decided_at_ms), Some(decided_by)) =
+                        (review.decided_at_ms, review.decided_by.as_ref())
+                    {
+                        if decided_by != "system_recall" {
+                            let review_time = decided_at_ms.saturating_sub(meta.created_at_ms);
+                            if review_time > 0 {
+                                total_review_time_ms =
+                                    total_review_time_ms.saturating_add(review_time);
+                                total_reviewed_count =
+                                    total_reviewed_count.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hourly distribution
+        let hour = ((meta.created_at_ms / 3600000) % 24) as u32;
+        *hourly_dist.entry(hour).or_insert(0) += 1;
     }
+
+    // Build daily trend sorted by date
+    let mut trend_items: Vec<DailyTrendItem> = daily_trend
+        .into_iter()
+        .map(|(date, (submitted, approved, rejected, deleted))| DailyTrendItem {
+            date,
+            submitted,
+            approved,
+            rejected,
+            deleted,
+        })
+        .collect();
+    trend_items.sort_by(|a, b| a.date.cmp(&b.date));
+
+    // Build hourly distribution sorted by hour
+    let mut hourly_items: Vec<HourlyDistItem> = hourly_dist
+        .into_iter()
+        .map(|(hour, count)| HourlyDistItem { hour, count })
+        .collect();
+    hourly_items.sort_by(|a, b| a.hour.cmp(&b.hour));
+
+    let avg_review_time_ms =
+        if total_reviewed_count > 0 {
+            Some(total_review_time_ms / total_reviewed_count as i64)
+        } else {
+            None
+        };
 
     (
         StatusCode::OK,
@@ -451,6 +557,9 @@ async fn webview_get_stats(
             today_count,
             total_count,
             stage_breakdown,
+            daily_trend: trend_items,
+            hourly_distribution: hourly_items,
+            avg_review_time_ms,
         }),
     )
         .into_response()
@@ -469,6 +578,10 @@ async fn webview_list_posts(
     let cursor = query.cursor.unwrap_or(0);
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let allowed_groups = allowed_groups(&session.identity);
+    let keyword_lower = query.keyword.map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty());
+    let date_from_ms = query.date_from_ms;
+    let date_to_ms = query.date_to_ms;
+    let group_filter = query.group_id.filter(|g| !g.trim().is_empty());
 
     let guard = match state.state.read() {
         Ok(guard) => guard,
@@ -489,8 +602,80 @@ async fn webview_list_posts(
                 .map(|stage| stage == meta.stage)
                 .unwrap_or(true)
         })
+        .filter(|(_, meta)| {
+            if group_filter.is_none() {
+                return true;
+            }
+            group_filter.as_deref() == Some(meta.group_id.as_str())
+        })
+        .filter(|(_, meta)| {
+            if date_from_ms.is_none() && date_to_ms.is_none() {
+                return true;
+            }
+            if let Some(from) = date_from_ms {
+                if meta.created_at_ms < from {
+                    return false;
+                }
+            }
+            if let Some(to) = date_to_ms {
+                if meta.created_at_ms > to {
+                    return false;
+                }
+            }
+            true
+        })
+        .filter(|(post_id, meta)| {
+            if keyword_lower.is_none() {
+                return true;
+            }
+            let kw = keyword_lower.as_deref().unwrap();
+            let sender_id = guard
+                .session_ingress
+                .get(&meta.session_id)
+                .and_then(|ids| ids.first())
+                .and_then(|id| guard.ingress_meta.get(id))
+                .map(|ingress| ingress.user_id.clone())
+                .unwrap_or_default();
+            let review_code = meta
+                .review_id
+                .and_then(|id| guard.reviews.get(&id).map(|review| review.review_code));
+            let external_code = guard.external_code_by_post.get(post_id).copied();
+            let preview_text = guard.drafts.get(post_id).and_then(|d| {
+                d.blocks.iter().find_map(|b| match b {
+                    oqqwall_rust_core::draft::DraftBlock::Paragraph { text } => {
+                        Some(text.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+            }).unwrap_or_default();
+
+            sender_id.to_ascii_lowercase().contains(kw)
+                || review_code.map(|c| c.to_string().contains(kw)).unwrap_or(false)
+                || external_code.map(|c| c.to_string().contains(kw)).unwrap_or(false)
+                || preview_text.contains(kw)
+                || meta.group_id.to_ascii_lowercase().contains(kw)
+                || meta.last_error.as_ref().map(|e| e.to_ascii_lowercase().contains(kw)).unwrap_or(false)
+        })
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.1.created_at_ms.cmp(&a.1.created_at_ms));
+    // Sort: default by created_at_ms desc, or by specific field
+    let sort_asc = query.sort_order.as_deref() == Some("asc");
+    match query.sort_by.as_deref() {
+        Some("code") => {
+            rows.sort_by(|(pa, _), (pb, _)| {
+                let ca = guard.external_code_by_post.get(pa).copied().unwrap_or(0);
+                let cb = guard.external_code_by_post.get(pb).copied().unwrap_or(0);
+                if sort_asc { ca.cmp(&cb) } else { cb.cmp(&ca) }
+            });
+        }
+        Some("created_at") | None => {
+            rows.sort_by(|(_, a), (_, b)| {
+                if sort_asc { a.created_at_ms.cmp(&b.created_at_ms) } else { b.created_at_ms.cmp(&a.created_at_ms) }
+            });
+        }
+        _ => {
+            rows.sort_by(|(_, a), (_, b)| b.created_at_ms.cmp(&a.created_at_ms));
+        }
+    }
 
     let items = rows
         .iter()
@@ -1187,6 +1372,42 @@ fn now_ms() -> i64 {
 
 fn now_sec() -> i64 {
     now_ms() / 1000
+}
+
+fn ms_to_date_string(ms: i64) -> String {
+    // Convert epoch ms to YYYY-MM-DD string (UTC+8 for China)
+    let secs = (ms / 1000) + 8 * 3600;
+    let days = secs / 86400;
+    // Basic date calculation from epoch
+    let mut year = 1970i64;
+    let mut remaining_days = days;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    let month_days = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 1usize;
+    for &md in month_days.iter() {
+        if remaining_days < md {
+            break;
+        }
+        remaining_days -= md;
+        month += 1;
+    }
+    let day = remaining_days + 1;
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn random_hex32() -> String {

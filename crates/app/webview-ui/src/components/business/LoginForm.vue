@@ -140,8 +140,8 @@ async function handleLogin() {
 .hero-copy {
   padding: 44px;
   background:
-    radial-gradient(circle at top right, rgba(31, 143, 106, 0.22), transparent 34%),
-    linear-gradient(160deg, rgba(255, 250, 242, 0.1), rgba(255, 250, 242, 0.04));
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.22), transparent 34%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(16px);
 }
@@ -154,7 +154,7 @@ async function handleLogin() {
   margin-bottom: 24px;
   padding: 10px 14px;
   border-radius: 999px;
-  background: rgba(255, 250, 242, 0.08);
+  background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: #f8efdf;
   letter-spacing: 0.06em;
@@ -187,7 +187,7 @@ async function handleLogin() {
 .point-card {
   padding: 18px;
   border-radius: 22px;
-  background: rgba(255, 250, 242, 0.06);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -210,7 +210,7 @@ async function handleLogin() {
   flex-direction: column;
   justify-content: space-between;
   background: rgba(255, 248, 238, 0.92);
-  color: #2a211b;
+  color: #334155;
 }
 
 .card-head h2 {
@@ -223,7 +223,7 @@ async function handleLogin() {
 
 .card-head p {
   margin: 0 0 28px;
-  color: rgba(42, 33, 27, 0.72);
+  color: rgba(51, 65, 85, 0.72);
   line-height: 1.7;
 }
 
@@ -233,7 +233,7 @@ async function handleLogin() {
   margin-top: 20px;
   padding-top: 18px;
   border-top: 1px solid rgba(34, 26, 21, 0.08);
-  color: rgba(42, 33, 27, 0.56);
+  color: rgba(51, 65, 85, 0.56);
   font-size: 12px;
   line-height: 1.7;
 }

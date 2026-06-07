@@ -180,7 +180,7 @@ function handleUserSelect(key: string) {
   padding: 0 22px;
   margin: 14px 12px 10px;
   border-radius: 22px;
-  background: linear-gradient(135deg, rgba(255, 250, 242, 0.08), rgba(255, 250, 242, 0.03));
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -190,11 +190,11 @@ function handleUserSelect(key: string) {
   border-radius: 14px;
   display: grid;
   place-items: center;
-  color: #f6ecda;
+  color: #e2e8f0;
   background:
     radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.2), transparent 48%),
-    linear-gradient(135deg, #1f8f6a, #355e7b);
-  box-shadow: 0 10px 24px rgba(31, 143, 106, 0.28);
+    linear-gradient(135deg, #3b82f6, #6366f1);
+  box-shadow: 0 10px 24px rgba(59, 130, 246, 0.28);
 }
 
 .brand-copy {
@@ -221,7 +221,7 @@ function handleUserSelect(key: string) {
   margin: 0 12px 14px;
   padding: 18px 16px;
   border-radius: 22px;
-  background: rgba(255, 250, 242, 0.05);
+  background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -260,7 +260,7 @@ function handleUserSelect(key: string) {
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(255, 250, 242, 0.04);
+  background: rgba(255, 255, 255, 0.04);
   font-size: 12px;
   line-height: 1.7;
   color: var(--app-text-on-dark-muted);
@@ -287,7 +287,7 @@ function handleUserSelect(key: string) {
 
 .eyebrow {
   margin: 0;
-  color: rgba(38, 29, 23, 0.48);
+  color: rgba(30, 41, 59, 0.48);
   text-transform: uppercase;
   letter-spacing: 0.16em;
   font-size: 11px;
@@ -305,11 +305,11 @@ function handleUserSelect(key: string) {
   font-size: clamp(28px, 3vw, 40px);
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .header-text span {
-  color: rgba(38, 29, 23, 0.58);
+  color: rgba(30, 41, 59, 0.58);
   font-size: 14px;
 }
 
@@ -323,8 +323,8 @@ function handleUserSelect(key: string) {
   min-width: 180px;
   padding: 12px 14px;
   border-radius: 18px;
-  background: rgba(255, 250, 242, 0.86);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
 }
 
@@ -334,12 +334,12 @@ function handleUserSelect(key: string) {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(38, 29, 23, 0.46);
+  color: rgba(30, 41, 59, 0.46);
 }
 
 .header-badge strong {
   font-size: 14px;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .user-profile {
@@ -349,15 +349,15 @@ function handleUserSelect(key: string) {
   cursor: pointer;
   padding: 10px 14px;
   border-radius: 18px;
-  background: rgba(255, 250, 242, 0.9);
-  border: 1px solid rgba(75, 62, 53, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.1);
   box-shadow: var(--app-shadow-soft);
   transition: transform 0.2s ease, background-color 0.2s ease;
 }
 
 .user-profile:hover {
   transform: translateY(-1px);
-  background-color: rgba(255, 250, 242, 0.98);
+  background-color: rgba(255, 255, 255, 0.98);
 }
 
 .user-copy {
@@ -369,18 +369,18 @@ function handleUserSelect(key: string) {
 .username {
   font-size: 14px;
   font-weight: 700;
-  color: #261d17;
+  color: #1e293b;
 }
 
 .user-role {
   font-size: 12px;
-  color: rgba(38, 29, 23, 0.58);
+  color: rgba(30, 41, 59, 0.58);
 }
 
 .content-shell {
   min-height: calc(100vh - 104px);
   padding: 8px 26px 28px;
-  color: #261d17;
+  color: #1e293b;
 }
 
 @media (max-width: 960px) {

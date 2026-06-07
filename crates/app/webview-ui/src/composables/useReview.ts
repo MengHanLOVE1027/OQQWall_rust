@@ -12,6 +12,11 @@ export function useReview() {
   const stage = ref<Stage>('review_pending')
   const keyword = ref('')
   const posts = ref<PostItem[]>([])
+  const page = ref(0)
+  const pageSize = ref(50)
+  const totalCount = ref(0)
+  const sortBy = ref('created_at')
+  const sortOrder = ref('desc')
 
   const selectedReviewIds = ref<string[]>([])
 
@@ -19,25 +24,15 @@ export function useReview() {
   const detailOpen = ref(false)
   const currentDetailId = ref<string | null>(null)
 
+  const totalPages = computed(() =>
+    Math.max(1, Math.ceil(totalCount.value / pageSize.value))
+  )
+
   const pendingCount = computed(() => posts.value.filter((item) => item.stage === 'review_pending').length)
 
   const filteredPosts = computed(() => {
-    const q = keyword.value.trim().toLowerCase()
-    if (!q) return posts.value
-    return posts.value.filter((post) => {
-      const fields = [
-        post.post_id,
-        post.review_id ?? '',
-        post.group_id,
-        post.sender_id ?? '',
-        String(post.internal_code ?? ''),
-        String(post.external_code ?? ''),
-        STAGE_LABELS[post.stage] ?? post.stage,
-        post.last_error ?? '',
-        post.preview_text ?? '',
-      ]
-      return fields.join(' ').toLowerCase().includes(q)
-    })
+    // Server-side filtering now, return posts directly
+    return posts.value
   })
 
   const selectableReviewIds = computed(() =>
@@ -52,8 +47,27 @@ export function useReview() {
   async function loadPosts() {
     loading.value = true
     try {
-      const result = await api<{ items: PostItem[] }>('/api/posts?stage=' + stage.value + '&limit=200')
+      const params = new URLSearchParams()
+      params.set('stage', stage.value)
+      params.set('limit', String(pageSize.value))
+      params.set('cursor', String(page.value * pageSize.value))
+      if (keyword.value.trim()) {
+        params.set('keyword', keyword.value.trim())
+      }
+      params.set('sort_by', sortBy.value)
+      params.set('sort_order', sortOrder.value)
+
+      const result = await api<{ items: PostItem[]; next_cursor: number | null }>(
+        '/api/posts?' + params.toString()
+      )
       posts.value = result.items
+      if (result.next_cursor !== null && result.next_cursor !== undefined) {
+        totalCount.value = result.items.length > 0
+          ? (page.value + 2) * pageSize.value // estimate
+          : page.value * pageSize.value
+      } else {
+        totalCount.value = page.value * pageSize.value + result.items.length
+      }
       const reviewSet = new Set(result.items.map((item) => item.review_id).filter(Boolean) as string[])
       selectedReviewIds.value = selectedReviewIds.value.filter((id) => reviewSet.has(id))
     } catch (err) {
@@ -61,6 +75,24 @@ export function useReview() {
     } finally {
       loading.value = false
     }
+  }
+
+  function goToPage(p: number) {
+    page.value = Math.max(0, Math.min(p, totalPages.value - 1))
+    loadPosts()
+  }
+
+  function nextPage() {
+    goToPage(page.value + 1)
+  }
+
+  function prevPage() {
+    goToPage(page.value - 1)
+  }
+
+  function search() {
+    page.value = 0
+    loadPosts()
   }
 
   async function openDetail(postId: string) {
@@ -121,10 +153,20 @@ export function useReview() {
     detail,
     detailOpen,
     allSelected,
+    page,
+    pageSize,
+    totalCount,
+    totalPages,
+    sortBy,
+    sortOrder,
     loadPosts,
     openDetail,
     refreshDetail,
     toggleSelectAll,
     toggleOneSelection,
+    goToPage,
+    nextPage,
+    prevPage,
+    search,
   }
 }

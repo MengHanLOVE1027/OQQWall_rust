@@ -79,6 +79,7 @@ pub struct NapCatRuntimeConfig {
 }
 
 const MAX_FORWARD_DEPTH: u32 = 4;
+const SUBMISSION_LIST_PAGE_SIZE: usize = 50;
 const FRIEND_APPROVE_DELAY_MAX_SEC: u64 = 240;
 const FRIEND_NOTIFY_DELAY_SEC: u64 = 30;
 const FRIEND_REQUEST_ID_MAX_LEN: usize = 20;
@@ -207,6 +208,8 @@ struct NapCatState {
     friend_suppression: HashMap<String, Vec<SuppressionEntry>>,
     blob_paths: HashMap<BlobId, String>,
     next_echo: u64,
+    submission_list_page: usize,
+    submission_list_search: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1994,6 +1997,69 @@ async fn parse_inbound_event(
                     send_group_text(out_tx, &chat_group_id, &pending_text).await;
                     return None;
                 }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::SubmissionList)) => {
+                    let list_text = {
+                        let mut guard = state.lock().await;
+                        guard.submission_list_page = 0;
+                        guard.submission_list_search = None;
+                        build_submission_list_text(&guard, &runtime.group_id, 0, None)
+                    };
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    send_group_text(out_tx, &chat_group_id, &list_text).await;
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::SubmissionListNext,
+                )) => {
+                    let list_text = {
+                        let mut guard = state.lock().await;
+                        let next_page = guard.submission_list_page.saturating_add(1);
+                        guard.submission_list_page = next_page;
+                        build_submission_list_text(
+                            &guard,
+                            &runtime.group_id,
+                            next_page,
+                            guard.submission_list_search.as_deref(),
+                        )
+                    };
+                    send_group_text(out_tx, &chat_group_id, &list_text).await;
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::SubmissionListPrev,
+                )) => {
+                    let list_text = {
+                        let mut guard = state.lock().await;
+                        let prev_page = guard.submission_list_page.saturating_sub(1);
+                        guard.submission_list_page = prev_page;
+                        build_submission_list_text(
+                            &guard,
+                            &runtime.group_id,
+                            prev_page,
+                            guard.submission_list_search.as_deref(),
+                        )
+                    };
+                    send_group_text(out_tx, &chat_group_id, &list_text).await;
+                    return None;
+                }
+                AuditCommand::Global(ParsedGlobalAction::Builtin(
+                    GlobalAction::SubmissionSearch { query },
+                )) => {
+                    let list_text = {
+                        let mut guard = state.lock().await;
+                        guard.submission_list_page = 0;
+                        guard.submission_list_search = Some(query.clone());
+                        build_submission_list_text(
+                            &guard,
+                            &runtime.group_id,
+                            0,
+                            Some(&query),
+                        )
+                    };
+                    send_group_text(out_tx, &chat_group_id, "已收到指令").await;
+                    send_group_text(out_tx, &chat_group_id, &list_text).await;
+                    return None;
+                }
                 AuditCommand::Global(ParsedGlobalAction::Builtin(GlobalAction::BlacklistList)) => {
                     let blacklist_text = {
                         let guard = state.lock().await;
@@ -3632,6 +3698,145 @@ fn build_pending_list_text(state: &NapCatState, group_id: &str) -> String {
     lines.join("\n")
 }
 
+fn build_submission_list_text(
+    state: &NapCatState,
+    group_id: &str,
+    page: usize,
+    search: Option<&str>,
+) -> String {
+    struct SubmissionItem {
+        review_code: ReviewCode,
+        sender_id: String,
+        text_preview: String,
+        is_processed: bool,
+    }
+
+    let mut items: Vec<SubmissionItem> = state
+        .review_info
+        .iter()
+        .filter_map(|(review_id, info)| {
+            if info.group_id != group_id {
+                return None;
+            }
+            let sender_id = state
+                .review_submitter
+                .get(review_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let ingress_ids = state.post_ingress.get(&info.post_id);
+                    ingress_ids
+                        .and_then(|ids| ids.first())
+                        .and_then(|ingress_id| state.ingress_summary.get(ingress_id))
+                        .map(|summary| summary.user_id.clone())
+                        .unwrap_or_else(|| "未知".to_string())
+                });
+            let text_preview = state
+                .post_ingress
+                .get(&info.post_id)
+                .and_then(|ids| ids.first())
+                .and_then(|ingress_id| state.ingress_summary.get(ingress_id))
+                .map(|summary| {
+                    let text = summary.text.trim();
+                    if text.len() > 60 {
+                        format!("{}...", text.chars().take(60).collect::<String>())
+                    } else if text.is_empty() {
+                        "[纯附件]".to_string()
+                    } else {
+                        text.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "[无内容]".to_string());
+            let is_processed = state.processed_reviews.contains(review_id);
+            Some(SubmissionItem {
+                review_code: info.review_code,
+                sender_id,
+                text_preview,
+                is_processed,
+            })
+        })
+        .collect();
+
+    // Apply search filter
+    if let Some(query) = search {
+        let query_lower = query.to_ascii_lowercase();
+        items.retain(|item| {
+            item.review_code.to_string().contains(&query_lower)
+                || item.sender_id.to_ascii_lowercase().contains(&query_lower)
+                || item.text_preview.to_ascii_lowercase().contains(&query_lower)
+        });
+    }
+
+    // Sort by review_code descending (newest first)
+    items.sort_by(|a, b| b.review_code.cmp(&a.review_code));
+
+    let total = items.len();
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total.saturating_sub(1) / SUBMISSION_LIST_PAGE_SIZE).saturating_add(1)
+    };
+    let page = page.min(total_pages.saturating_sub(1));
+
+    if total == 0 {
+        if search.is_some() {
+            return "投稿列表: 搜索无结果".to_string();
+        }
+        return "投稿列表为空".to_string();
+    }
+
+    let start = page.saturating_mul(SUBMISSION_LIST_PAGE_SIZE);
+    let end = (start.saturating_add(SUBMISSION_LIST_PAGE_SIZE)).min(total);
+    let page_items = &items[start..end];
+
+    let mut lines = Vec::new();
+    let search_hint = if let Some(query) = search {
+        format!(" 搜索: {}", query)
+    } else {
+        String::new()
+    };
+    lines.push(format!(
+        "投稿列表 (第{}/{}页 共{}条){}:",
+        page.saturating_add(1),
+        if total_pages == 0 { 1 } else { total_pages },
+        total,
+        search_hint,
+    ));
+    lines.push(String::new());
+
+    for item in page_items {
+        let status = if item.is_processed {
+            "[已处理]"
+        } else {
+            "[待审核]"
+        };
+        let sender_short = if item.sender_id.len() > 12 {
+            format!("{}...", &item.sender_id[..12])
+        } else {
+            item.sender_id.clone()
+        };
+        lines.push(format!(
+            "#{} {} {} {}",
+            item.review_code, status, sender_short, item.text_preview
+        ));
+    }
+
+    lines.push(String::new());
+    if page.saturating_add(1) < total_pages {
+        lines.push(format!(
+            "--- 第{}/{}页，发送 '翻页' 查看下一页 ---",
+            page.saturating_add(1),
+            total_pages
+        ));
+    } else {
+        lines.push(format!("--- 第{}/{}页，已是最后一页 ---", page.saturating_add(1), total_pages));
+    }
+    if search.is_some() {
+        lines.push("发送 '投稿列表' 可清除搜索并返回第一页".to_string());
+    }
+
+    lines.join("\n")
+}
+
 fn build_blacklist_list_text(state: &NapCatState, group_id: &str) -> String {
     let Some(entries) = state.blacklist.get(group_id) else {
         return "黑名单为空".to_string();
@@ -4369,6 +4574,24 @@ const HELP_TEXT: &str = r#"全局指令:
 
 系统修复:
 重启服务并重建连接（谨慎使用）
+
+投稿列表:
+列出所有稿件（包括已审核），每页50条
+用法：投稿列表
+
+翻页:
+查看投稿列表的下一页
+用法：翻页
+
+上一页:
+查看投稿列表的上一页
+用法：上一页
+
+搜索:
+在投稿列表中搜索稿件（支持编号、投稿人ID、内容）
+用法：搜索 <关键词>
+示例：搜索 123
+说明：搜索后自动回到第一页，发送"投稿列表"清除搜索
 
 
 审核指令:

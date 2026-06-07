@@ -301,6 +301,19 @@ pub fn parse_builtin_global_action(command: &str, rest: &str) -> Option<GlobalAc
         "快捷指令" => parse_shortcut_action(rest),
         "自检" => Some(GlobalAction::SelfCheck),
         "系统修复" => Some(GlobalAction::SystemRepair),
+        "投稿列表" => Some(GlobalAction::SubmissionList),
+        "翻页" => Some(GlobalAction::SubmissionListNext),
+        "上一页" => Some(GlobalAction::SubmissionListPrev),
+        "搜索" => {
+            let query = rest.trim();
+            if query.is_empty() {
+                None
+            } else {
+                Some(GlobalAction::SubmissionSearch {
+                    query: query.to_string(),
+                })
+            }
+        }
         _ => None,
     }
 }

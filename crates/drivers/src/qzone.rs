@@ -53,8 +53,11 @@ macro_rules! debug_log {
 const EMOTION_PUBLISH_URL: &str =
     "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6";
 const UPLOAD_IMAGE_URL: &str = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image";
+const UPLOAD_VIDEO_URL: &str =
+    "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_video";
 const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.1.3702.40 Safari/537.36 QBWebViewUA/2 QBWebViewType/1 WKType/1";
 const MAX_UPLOAD_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UPLOAD_VIDEO_BYTES: usize = 100 * 1024 * 1024;
 const ERROR_BODY_PREVIEW_CHARS: usize = 512;
 const PRESERVE_MAX_LONG_EDGE_1080P: u32 = 1920;
 const PRESERVE_MAX_SHORT_EDGE_1080P: u32 = 1080;
@@ -778,14 +781,22 @@ async fn publish_batch_for_account(
             return Err(err);
         }
     };
-    if images.is_empty() {
-        return Err(QzoneError::unknown("empty images"));
+    let videos = match collect_batch_videos(assets, blob_paths).await {
+        Ok(videos) => videos,
+        Err(err) => {
+            refresh_cookie_cache(state, account_id).await;
+            return Err(err);
+        }
+    };
+    if images.is_empty() && videos.is_empty() {
+        return Err(QzoneError::unknown("empty images and videos"));
     }
     debug_log!(
-        "qzone publish attempt: account={} attempt={} images={} content_len={}",
+        "qzone publish attempt: account={} attempt={} images={} videos={} content_len={}",
         account_id,
         _attempt,
         images.len(),
+        videos.len(),
         publish_text.len()
     );
     let chunk_size = if max_images_per_post > 0 {
@@ -794,8 +805,22 @@ async fn publish_batch_for_account(
         images.len().max(1)
     };
     let mut first_tid: Option<String> = None;
-    for chunk in images.chunks(chunk_size) {
-        match client.publish_emotion(publish_text, chunk).await {
+    let images_empty: Vec<Vec<u8>> = Vec::new();
+    let chunks: Vec<&[Vec<u8>]> = if images.is_empty() {
+        vec![&images_empty[..]]
+    } else {
+        images.chunks(chunk_size).collect()
+    };
+    let publish_videos: &[Vec<u8>] = if chunks.len() == 1 {
+        &videos
+    } else {
+        &images_empty
+    };
+    for chunk in &chunks {
+        match client
+            .publish_emotion(publish_text, chunk, publish_videos)
+            .await
+        {
             Ok(tid) => {
                 if first_tid.is_none() {
                     first_tid = Some(tid);
@@ -849,11 +874,13 @@ impl QzoneClient {
         &self,
         content: &str,
         images: &[Vec<u8>],
+        videos: &[Vec<u8>],
     ) -> Result<String, QzoneError> {
         debug_log!(
-            "qzone publish request: content_len={} images={}",
+            "qzone publish request: content_len={} images={} videos={}",
             content.len(),
-            images.len()
+            images.len(),
+            videos.len()
         );
         let cookie_header = build_cookie_header(&self.cookies);
         let mut form: HashMap<&str, String> = HashMap::new();
@@ -888,6 +915,21 @@ impl QzoneClient {
             form.insert("pic_bo", pic_bos.join("\t"));
             form.insert("richtype", "1".to_string());
             form.insert("richval", richvals.join("\t"));
+        }
+
+        if !videos.is_empty() {
+            let mut video_richvals = Vec::new();
+            for (idx, video) in videos.iter().enumerate() {
+                let filename = format!("video_{}.mp4", idx);
+                let upload = self.upload_video(video, &filename).await?;
+                let richval = get_video_richval(&upload)?;
+                video_richvals.push(richval);
+            }
+            if images.is_empty() {
+                form.insert("richtype", "2".to_string());
+                form.insert("subrichtype", "2".to_string());
+            }
+            form.insert("video_richval", video_richvals.join("\t"));
         }
 
         debug_log!("qzone publish g_tk={}", self.gtk);
@@ -1084,6 +1126,119 @@ impl QzoneClient {
         }
         if let Some(err) = classify_response_error(&json) {
             return Err(err.with_context("upload response"));
+        }
+        Ok(json)
+    }
+
+    async fn upload_video(&self, video: &[u8], filename: &str) -> Result<Value, QzoneError> {
+        if video.len() > MAX_UPLOAD_VIDEO_BYTES {
+            return Err(QzoneError::unknown(format!(
+                "video too large: {} bytes (max {})",
+                video.len(),
+                MAX_UPLOAD_VIDEO_BYTES
+            )));
+        }
+        debug_log!(
+            "qzone upload video: size_bytes={} filename={}",
+            video.len(),
+            filename
+        );
+        let cookie_header = build_cookie_header(&self.cookies);
+        let skey = self
+            .cookies
+            .get("skey")
+            .or_else(|| self.cookies.get("p_skey"))
+            .ok_or_else(|| QzoneError::account("missing skey"))?
+            .clone();
+        let p_skey = self
+            .cookies
+            .get("p_skey")
+            .ok_or_else(|| QzoneError::account("missing p_skey"))?
+            .clone();
+        let videofile = STANDARD.encode(video);
+
+        let mut form: HashMap<&str, String> = HashMap::new();
+        form.insert("filename", filename.to_string());
+        form.insert("zzpanelkey", "".to_string());
+        form.insert("uploadtype", "2".to_string());
+        form.insert("albumtype", "7".to_string());
+        form.insert("exttype", "0".to_string());
+        form.insert("skey", skey);
+        form.insert("zzpaneluin", self.uin.to_string());
+        form.insert("p_uin", self.uin.to_string());
+        form.insert("uin", self.uin.to_string());
+        form.insert("p_skey", p_skey);
+        form.insert("output_type", "jsonhtml".to_string());
+        form.insert("qzonetoken", "".to_string());
+        form.insert("refer", "shuoshuo".to_string());
+        form.insert("charset", "utf-8".to_string());
+        form.insert("output_charset", "utf-8".to_string());
+        form.insert("upload_hd", "1".to_string());
+        form.insert(
+            "backUrls",
+            "http://upbak.photo.qzone.qq.com/cgi-bin/upload/cgi_upload_video,http://119.147.64.75/cgi-bin/upload/cgi_upload_video".to_string(),
+        );
+        form.insert("url", format!("{}?g_tk={}", UPLOAD_VIDEO_URL, self.gtk));
+        form.insert("base64", "1".to_string());
+        form.insert("videofile", videofile);
+
+        let res = self
+            .client
+            .post(UPLOAD_VIDEO_URL)
+            .query(&[("g_tk", &self.gtk)])
+            .header("user-agent", CHROME_USER_AGENT)
+            .header("accept", "*/*")
+            .header(
+                "content-type",
+                "application/x-www-form-urlencoded;charset=UTF-8",
+            )
+            .header("referer", format!("https://user.qzone.qq.com/{}", self.uin))
+            .header("origin", "https://user.qzone.qq.com")
+            .header("cookie", cookie_header)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|err| classify_reqwest_error("upload video request", err))?;
+
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = match res.text().await {
+            Ok(text) => text,
+            Err(err) => {
+                if !status.is_success() {
+                    let fallback = format!("<read body failed: {}>", err);
+                    debug_log_http_failure("qzone upload video", status, &headers, &fallback);
+                    return Err(classify_http_status_with_body(
+                        "upload video http status",
+                        status.as_u16(),
+                        &fallback,
+                    ));
+                }
+                return Err(classify_reqwest_error("upload video read body", err));
+            }
+        };
+        if !status.is_success() {
+            debug_log_http_failure("qzone upload video", status, &headers, &body);
+            return Err(classify_http_status_with_body(
+                "upload video http status",
+                status.as_u16(),
+                &body,
+            ));
+        }
+        let start = body
+            .find('{')
+            .ok_or_else(|| QzoneError::unknown("invalid upload video response"))?;
+        let end = body
+            .rfind('}')
+            .ok_or_else(|| QzoneError::unknown("invalid upload video response"))?;
+        let json_str = &body[start..=end];
+        let json: Value = serde_json::from_str(json_str)
+            .map_err(|err| QzoneError::unknown(format!("invalid upload video json: {}", err)))?;
+        if let Ok(_pretty) = serde_json::to_string_pretty(&json) {
+            debug_log!("qzone upload video response json:\n{}", _pretty);
+        }
+        if let Some(err) = classify_response_error(&json) {
+            return Err(err.with_context("upload video response"));
         }
         Ok(json)
     }
@@ -2144,6 +2299,40 @@ enum UploadSourceFormat {
     Other,
 }
 
+async fn collect_batch_videos(
+    posts: &[PostAssets],
+    blob_paths: &HashMap<BlobId, String>,
+) -> Result<Vec<Vec<u8>>, QzoneError> {
+    let mut videos = Vec::new();
+    for post in posts {
+        let mut part = collect_videos(&post.draft, blob_paths).await?;
+        videos.append(&mut part);
+    }
+    Ok(videos)
+}
+
+async fn collect_videos(
+    draft: &Draft,
+    blob_paths: &HashMap<BlobId, String>,
+) -> Result<Vec<Vec<u8>>, QzoneError> {
+    let mut videos = Vec::new();
+    for block in &draft.blocks {
+        if let DraftBlock::Attachment {
+            kind: MediaKind::Video,
+            reference,
+            ..
+        } = block
+        {
+            videos.push(resolve_reference_bytes(
+                MediaKind::Video,
+                reference,
+                blob_paths,
+            )?);
+        }
+    }
+    Ok(videos)
+}
+
 fn prepare_upload_image(image: &[u8]) -> Result<PreparedUploadImage, QzoneError> {
     if image.len() <= MAX_UPLOAD_IMAGE_BYTES {
         return Ok(PreparedUploadImage {
@@ -2454,6 +2643,50 @@ fn get_picbo_and_richval(upload: &Value) -> Result<(String, String), QzoneError>
         albumid, lloc, sloc, kind, height, width, height, width
     );
     Ok((picbo, richval))
+}
+
+fn get_video_richval(upload: &Value) -> Result<String, QzoneError> {
+    let ret = upload.get("ret").and_then(|v| v.as_i64()).unwrap_or(-1);
+    if ret != 0 {
+        let message = upload
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("upload video failed");
+        return Err(classify_json_response_error(ret, message, upload));
+    }
+    let data = upload
+        .get("data")
+        .ok_or_else(|| QzoneError::unknown("upload video response missing data"))?;
+    let vid = data
+        .get("vid")
+        .and_then(|v| v.as_str())
+        .or_else(|| data.get("url").and_then(|v| v.as_str()))
+        .ok_or_else(|| QzoneError::unknown("upload video response missing vid/url"))?;
+    let duration = data
+        .get("duration")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let width = data
+        .get("width")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let height = data
+        .get("height")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let size = data
+        .get("size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Ok(format!(
+        "{},{},{},{},{},{}",
+        vid,
+        duration as u64,
+        width,
+        height,
+        size,
+        vid
+    ))
 }
 
 fn extract_bo(value: &str) -> Option<String> {
