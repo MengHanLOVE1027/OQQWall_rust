@@ -23,6 +23,9 @@ pub struct IngressCommand {
     pub platform_msg_id: String,
     pub message: IngressMessage,
     pub received_at_ms: TimestampMs,
+    /// When true, the session closes immediately (no aggregation wait).
+    /// Used for #确认 in submission sessions where all messages are already combined.
+    pub close_immediately: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

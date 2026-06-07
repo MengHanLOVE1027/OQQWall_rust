@@ -53,6 +53,8 @@ macro_rules! debug_log {
 
 const EMOTION_PUBLISH_URL: &str =
     "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6";
+const EMOTION_UPDATE_URL: &str =
+    "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_update";
 const UPLOAD_IMAGE_URL: &str = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image";
 const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.1.3702.40 Safari/537.36 QBWebViewUA/2 QBWebViewType/1 WKType/1";
 const MAX_UPLOAD_IMAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -470,8 +472,34 @@ pub fn spawn_qzone_sender(
                     );
                 }
                 Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }) => {
-                    let mut guard = state.lock().await;
-                    guard.send_plans.remove(&post_id);
+                    let (external_code, account_id) = {
+                        let mut guard = state.lock().await;
+                        let ext = guard.external_codes.get(&post_id).copied();
+                        // Use cookie_cache for the account — it's always set to the last
+                        // publishing account, which is the one that owns this post
+                        let acc = guard.cookie_cache.as_ref().map(|c| c.account_id.clone());
+                        guard.send_plans.remove(&post_id);
+                        (ext, acc)
+                    };
+                    // If the post was published to QQ Space, set it private
+                    if let (Some(tid_num), Some(account_id)) = (external_code, account_id) {
+                        if !account_id.is_empty() {
+                            let tid = tid_num.to_string();
+                            debug_log!("qzone recall: tid={} account_id={}", tid, account_id);
+                            match get_cookies(&state, &account_id).await {
+                                Ok(cookies) => {
+                                    if let Ok(client) = QzoneClient::from_cookie_map(cookies) {
+                                        if let Err(err) = client.delete_emotion(&tid).await {
+                                            debug_log!("qzone recall failed for tid={}: {:?}", tid, err);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    debug_log!("qzone recall skip: cookies unavailable: {:?}", err);
+                                }
+                            }
+                        }
+                    }
                 }
                 Event::Blob(BlobEvent::BlobPersisted { blob_id, path }) => {
                     let mut guard = state.lock().await;
@@ -1104,6 +1132,66 @@ impl QzoneClient {
             return Err(err.with_context("upload response"));
         }
         Ok(json)
+    }
+
+    /// Set a published QQ Space emotion to private (仅自己可见).
+    /// This is the "delete" equivalent — QQ Space doesn't allow true deletion via API.
+    async fn delete_emotion(&self, tid: &str) -> Result<(), QzoneError> {
+        let cookie_header = build_cookie_header(&self.cookies);
+        let mut form: HashMap<&str, String> = HashMap::new();
+        form.insert("syn_tweet_verson", "1".to_string());
+        form.insert("tid", tid.to_string());
+        form.insert("paramstr", "1".to_string());
+        form.insert("pic_template", "".to_string());
+        form.insert("richtype", "".to_string());
+        form.insert("richval", "".to_string());
+        form.insert("special_url", "".to_string());
+        form.insert("subrichtype", "".to_string());
+        form.insert("con", "".to_string());
+        form.insert("feedversion", "1".to_string());
+        form.insert("ver", "1".to_string());
+        form.insert("ugc_right", "64".to_string());
+        form.insert("to_sign", "0".to_string());
+        form.insert("ugcright_id", tid.to_string());
+        form.insert("hostuin", self.uin.to_string());
+        form.insert("code_version", "1".to_string());
+        form.insert("format", "fs".to_string());
+        form.insert(
+            "qzreferrer",
+            format!("https://user.qzone.qq.com/{}", self.uin),
+        );
+
+        debug_log!("qzone delete_emotion: tid={}", tid);
+        let res = self
+            .client
+            .post(EMOTION_UPDATE_URL)
+            .query(&[("g_tk", &self.gtk)])
+            .header("user-agent", CHROME_USER_AGENT)
+            .header("accept", "*/*")
+            .header(
+                "content-type",
+                "application/x-www-form-urlencoded;charset=UTF-8",
+            )
+            .header("referer", format!("https://user.qzone.qq.com/{}", self.uin))
+            .header("origin", "https://user.qzone.qq.com")
+            .header("cookie", cookie_header)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|err| classify_reqwest_error("delete emotion request", err))?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            debug_log!("qzone delete_emotion failed: http {} body={}", status.as_u16(), &body[..body.len().min(200)]);
+            return Err(classify_http_status_with_body(
+                "delete emotion http status",
+                status.as_u16(),
+                &body,
+            ));
+        }
+        debug_log!("qzone delete_emotion success: tid={}", tid);
+        Ok(())
     }
 
 }

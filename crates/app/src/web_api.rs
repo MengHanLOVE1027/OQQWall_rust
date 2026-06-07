@@ -1006,6 +1006,7 @@ async fn create_post(
             platform_msg_id,
             message: normalized_message,
             received_at_ms,
+            close_immediately: false,
         });
     }
     let Some(first_platform_msg_id) = first_platform_msg_id else {

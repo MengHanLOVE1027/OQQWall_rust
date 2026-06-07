@@ -1,375 +1,165 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
-  NAlert,
-  NButton,
-  NDescriptions,
-  NDescriptionsItem,
-  NDivider,
-  NDrawer,
-  NDrawerContent,
-  NEmpty,
-  NForm,
-  NFormItem,
-  NImage,
-  NInput,
-  NInputNumber,
-  NModal,
-  NSelect,
-  NSpin,
-  NTag,
-  useMessage,
+  NAlert, NButton, NDescriptions, NDescriptionsItem, NDivider,
+  NDrawer, NDrawerContent, NEmpty, NFormItem, NImage,
+  NInput, NInputNumber, NModal, NSelect, NSpin, NTag, useMessage,
 } from 'naive-ui'
-import { api } from '../../api/client'
 import { ACTION_LABELS, ACTIONS, STAGE_LABELS, type PostDetail } from '../../api/types'
+import { usePostActions } from '../../composables/usePostActions'
 
 const props = defineProps<{
-  show: boolean
-  loading: boolean
-  detail: PostDetail | null
-  hasPrev?: boolean
-  hasNext?: boolean
+  show: boolean; loading: boolean; detail: PostDetail | null
+  hasPrev?: boolean; hasNext?: boolean
 }>()
-
 const emit = defineEmits<{
   (e: 'update:show', v: boolean): void
-  (e: 'refresh'): void
-  (e: 'prev'): void
-  (e: 'next'): void
+  (e: 'refresh'): void; (e: 'prev'): void; (e: 'next'): void
 }>()
 
 const message = useMessage()
-const windowWidth = ref(window.innerWidth)
-const submitting = ref(false)
+const actions = usePostActions()
 
-const actionForm = reactive({
-  action: 'approve',
-  comment: '',
-  text: '',
-  delay_ms: 180000,
-  quick_reply_key: '',
-  target_review_code: null as number | null,
-})
+const w = ref(0)
+const action = ref('approve')
+const extra = reactive({ comment: '', text: '', delay_ms: 180000, key: '', target: null as number | null })
+const actionOpts = ACTIONS.map(k => ({ label: ACTION_LABELS[k], value: k }))
 
-const confirmState = reactive({
-  show: false,
-  action: 'approve',
-})
+onMounted(() => { w.value = window.innerWidth; window.addEventListener('resize', () => w.value = window.innerWidth) })
+onUnmounted(() => {})
+watch(() => props.detail?.post_id, () => { action.value = 'approve'; extra.comment = ''; extra.text = ''; extra.delay_ms = 180000; extra.key = ''; extra.target = null })
 
-const actionOptions = ACTIONS.map((k) => ({ label: ACTION_LABELS[k], value: k }))
+const isMobile = computed(() => w.value < 640)
+const visible = computed({ get: () => props.show, set: v => emit('update:show', v) })
+const label = computed(() => `#${props.detail?.review_code ?? props.detail?.external_code ?? '-'}`)
 
-const updateWidth = () => { windowWidth.value = window.innerWidth }
-onMounted(() => window.addEventListener('resize', updateWidth))
-onUnmounted(() => window.removeEventListener('resize', updateWidth))
-
-const isMobile = computed(() => windowWidth.value < 640)
-const drawerWidth = computed(() => (isMobile.value ? '100%' : 780))
-
-const visible = computed({
-  get: () => props.show,
-  set: (v) => emit('update:show', v),
-})
-
-watch(
-  () => props.detail?.post_id,
-  () => {
-    actionForm.action = 'approve'
-    actionForm.comment = ''
-    actionForm.text = ''
-    actionForm.delay_ms = 180000
-    actionForm.quick_reply_key = ''
-    actionForm.target_review_code = null
-    confirmState.show = false
-  },
-)
-
-function formatTime(ms: number) {
-  return new Date(ms).toLocaleString('zh-CN')
-}
-
-function renderImageUrl(blockRef: { reference_type: 'blob_id' | 'remote_url'; reference: string }) {
-  return blockRef.reference_type === 'blob_id' ? '/api/blobs/' + blockRef.reference : blockRef.reference
-}
-
-async function copyText(value: string, label: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-    message.success(`${label}已复制`)
-  } catch {
-    message.error(`复制${label}失败`)
-  }
-}
-
-const actionHelp = computed(() => {
-  switch (actionForm.action) {
-    case 'reject': return '可选填写拒绝说明，留空时会直接执行拒绝。'
-    case 'defer': return '稿件会在指定时间后再次进入处理列表。'
-    case 'quick_reply': return '填写已配置的快捷回复键名。'
-    case 'merge': return '将当前稿件合并到目标审核编号。'
-    case 'toggle_anonymous': return '切换当前稿件的匿名状态。'
-    case 'rerender': return '重新生成当前稿件的渲染图。'
-    case 'reply': return '向投稿人发送回复。'
-    case 'comment': return '为当前稿件添加备注。'
-    case 'blacklist': return '将投稿人加入黑名单。'
-    default: return '选择动作后，下方会显示对应参数。'
+const extHint = computed(() => {
+  switch (action.value) {
+    case 'reject': return '拒绝说明（可留空）'
+    case 'reply': case 'comment': return '文本内容（必填）'
+    case 'blacklist': return '拉黑原因（必填）'
+    case 'defer': return '暂缓毫秒数'
+    case 'quick_reply': return '快捷回复键名'
+    case 'merge': return '目标审核编号'
+    default: return ''
   }
 })
 
-const blockStats = computed(() => {
-  const blocks = props.detail?.blocks ?? []
-  const textCount = blocks.filter((block) => block.kind === 'text').length
-  const attachmentCount = blocks.length - textCount
-  return { textCount, attachmentCount }
+const needsText = computed(() => ['reject','blacklist','comment','reply'].includes(action.value))
+const needsMs = computed(() => action.value === 'defer')
+const needsKey = computed(() => action.value === 'quick_reply')
+const needsCode = computed(() => action.value === 'merge')
+
+function formatTime(ms: number) { return new Date(ms).toLocaleString('zh-CN') }
+function blobUrl(ref: string, type: string) { return type === 'blob_id' ? '/api/blobs/' + ref : ref }
+async function copy(text: string, label: string) {
+  try { await navigator.clipboard.writeText(text); message.success(label + '已复制') }
+  catch { message.error('复制失败') }
+}
+
+const blocks = computed(() => {
+  const b = props.detail?.blocks ?? []
+  return { t: b.filter(x => x.kind === 'text').length, f: b.length - b.filter(x => x.kind === 'text').length }
 })
 
-function buildPayload(action: string) {
-  const payload: Record<string, unknown> = { action }
-
-  if (action === 'reject') {
-    const comment = actionForm.comment.trim()
-    if (comment) payload.comment = comment
-  }
-
-  if (action === 'blacklist') {
-    const comment = actionForm.comment.trim()
-    if (!comment) throw new Error('请填写处理说明')
-    payload.comment = comment
-  }
-
-  if (action === 'comment') {
-    const text = actionForm.text.trim() || actionForm.comment.trim()
-    if (!text) throw new Error('请填写评论内容')
-    payload.text = text
-  }
-
-  if (action === 'reply') {
-    const text = actionForm.text.trim()
-    if (!text) throw new Error('请填写回复内容')
-    payload.text = text
-  }
-
-  if (action === 'defer') {
-    if (!actionForm.delay_ms || actionForm.delay_ms <= 0) throw new Error('请填写大于 0 的暂缓时长')
-    payload.delay_ms = actionForm.delay_ms
-  }
-
-  if (action === 'quick_reply') {
-    const key = actionForm.quick_reply_key.trim()
-    if (!key) throw new Error('请填写快捷回复键名')
-    payload.quick_reply_key = key
-  }
-
-  if (action === 'merge') {
-    if (!actionForm.target_review_code) throw new Error('请填写目标审核编号')
-    payload.target_review_code = actionForm.target_review_code
-  }
-
-  return payload
+function doAction() {
+  if (!props.detail?.review_id) { message.error('不可操作'); return }
+  actions.confirmState.comment = extra.comment
+  actions.confirmState.text = extra.text
+  actions.confirmState.delay_ms = extra.delay_ms
+  actions.confirmState.quick_reply_key = extra.key
+  actions.confirmState.target_review_code = extra.target
+  actions.openConfirm(props.detail.review_id, action.value, label.value, props.detail.group_id, props.detail.sender_id ?? '')
 }
 
-function requestExecute(actionOverride?: string) {
-  if (!props.detail?.review_id) {
-    message.error('当前稿件无法操作（无 review_id）')
-    return
-  }
-  if (actionOverride) actionForm.action = actionOverride
-  confirmState.action = actionOverride ?? actionForm.action
-  confirmState.show = true
-}
-
-async function confirmExecute() {
-  if (!props.detail?.review_id) {
-    message.error('当前稿件无法操作（无 review_id）')
-    return
-  }
-
-  let payload: Record<string, unknown>
-  try {
-    payload = buildPayload(confirmState.action)
-  } catch (error) {
-    message.error((error as Error).message)
-    return
-  }
-
-  submitting.value = true
-  try {
-    await api(`/api/reviews/${props.detail.review_id}/decision`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    })
-    message.success(`执行成功: ${ACTION_LABELS[confirmState.action]}`)
-    confirmState.show = false
+async function onConfirm() {
+  if (await actions.executeAction()) {
     emit('refresh')
-    if (['approve', 'reject', 'delete', 'immediate'].includes(confirmState.action)) {
-      emit('update:show', false)
-    }
-  } catch (e) {
-    message.error((e as Error).message)
-  } finally {
-    submitting.value = false
+    if (actions.isTerminalAction(actions.confirmState.action)) emit('update:show', false)
   }
 }
 </script>
 
 <template>
-  <n-drawer v-model:show="visible" :width="drawerWidth" placement="right" :trap-focus="false">
+  <n-drawer v-model:show="visible" :width="isMobile ? '100%' : 780" placement="right" :trap-focus="false">
     <n-drawer-content title="稿件详情" closable native-scrollbar>
-      <div v-if="loading" class="loading-wrap">
-        <n-spin size="large" />
-      </div>
-      <div v-else-if="detail" class="detail-wrapper">
-        <!-- Hero section -->
-        <section class="detail-hero">
+      <div v-if="loading" style="display:flex;justify-content:center;padding:48px"><n-spin size="large" /></div>
+
+      <div v-else-if="detail" class="dv">
+        <!-- Hero -->
+        <section class="hero">
           <div>
-            <span class="detail-kicker">稿件信息</span>
-            <h2>#{{ detail.review_code ?? detail.external_code ?? '-' }}</h2>
-            <p>{{ detail.sender_id ?? '未知投稿人' }} · {{ formatTime(detail.created_at_ms) }}</p>
+            <span class="k">稿件信息</span>
+            <h2>{{ label }}</h2>
+            <p>{{ detail.sender_id ?? '未知' }} · {{ formatTime(detail.created_at_ms) }}</p>
           </div>
-          <div class="hero-tags">
-            <n-tag :type="detail.stage === 'review_pending' ? 'warning' : 'default'" round>
-              {{ STAGE_LABELS[detail.stage] ?? detail.stage }}
-            </n-tag>
-            <n-tag :type="detail.is_safe ? 'success' : 'error'" round>
-              {{ detail.is_safe ? '安全' : '待核查' }}
-            </n-tag>
-            <n-tag :type="detail.is_anonymous ? 'info' : 'default'" round>
-              {{ detail.is_anonymous ? '匿名' : '非匿名' }}
-            </n-tag>
+          <div class="tags">
+            <n-tag :type="detail.stage==='review_pending'?'warning':'default'" round>{{ STAGE_LABELS[detail.stage]??detail.stage }}</n-tag>
+            <n-tag :type="detail.is_safe?'success':'error'" round>{{ detail.is_safe?'安全':'待核查' }}</n-tag>
+            <n-tag :type="detail.is_anonymous?'info':'default'" round>{{ detail.is_anonymous?'匿名':'非匿名' }}</n-tag>
           </div>
         </section>
 
-        <!-- Utility bar -->
-        <section class="utility-bar">
-          <div class="utility-group">
-            <n-button size="small" :disabled="!props.hasPrev" @click="emit('prev')">上一条</n-button>
-            <n-button size="small" :disabled="!props.hasNext" @click="emit('next')">下一条</n-button>
-            <n-button size="small" @click="emit('refresh')">刷新详情</n-button>
-          </div>
-          <div class="utility-group">
-            <n-button size="small" @click="copyText(detail.post_id, '稿件 ID')">复制稿件 ID</n-button>
-            <n-button size="small" @click="copyText(detail.session_id, '会话 ID')">复制会话 ID</n-button>
-          </div>
+        <!-- Nav bar -->
+        <section class="bar">
+          <div class="bg"><n-button size="small" :disabled="!hasPrev" @click="emit('prev')">上一条</n-button><n-button size="small" :disabled="!hasNext" @click="emit('next')">下一条</n-button><n-button size="small" @click="emit('refresh')">刷新</n-button></div>
+          <div class="bg"><n-button size="small" @click="copy(detail.post_id,'ID')">复制ID</n-button><n-button size="small" @click="copy(detail.session_id,'会话ID')">复制会话</n-button></div>
         </section>
 
-        <!-- Action panel -->
-        <section class="action-panel">
-          <div class="action-panel-head">
-            <div>
-              <span class="panel-kicker">审核操作</span>
-              <h3>常用操作可直接发起，提交前会再次确认。</h3>
-            </div>
-            <div class="quick-actions">
-              <n-button type="primary" @click="requestExecute('approve')" :loading="submitting">通过</n-button>
-              <n-button type="warning" ghost @click="requestExecute('reject')" :loading="submitting">拒绝</n-button>
-              <n-button type="error" ghost @click="requestExecute('delete')" :loading="submitting">删除</n-button>
-              <n-button ghost @click="requestExecute('immediate')" :loading="submitting">立即发送</n-button>
-              <n-button ghost @click="requestExecute('rerender')" :loading="submitting">重渲染</n-button>
-            </div>
+        <!-- Actions: quick buttons + compact form -->
+        <section class="ap">
+          <div class="qb">
+            <n-button type="primary" @click="action='approve';doAction()" :loading="actions.submitting.value">通过</n-button>
+            <n-button type="warning" ghost @click="action='reject';doAction()" :loading="actions.submitting.value">拒绝</n-button>
+            <n-button type="error" ghost @click="action='delete';doAction()" :loading="actions.submitting.value">删除</n-button>
+            <n-button ghost @click="action='immediate';doAction()" :loading="actions.submitting.value">立即发送</n-button>
+            <n-button ghost @click="action='rerender';doAction()" :loading="actions.submitting.value">重渲染</n-button>
           </div>
-
           <n-divider />
-
-          <n-form label-placement="top" class="advanced-form">
-            <n-form-item label="动作类型">
-              <n-select v-model:value="actionForm.action" :options="actionOptions" />
-            </n-form-item>
-            <p class="action-help">{{ actionHelp }}</p>
-
-            <n-form-item
-              v-if="['reject', 'blacklist'].includes(actionForm.action)"
-              :label="actionForm.action === 'reject' ? '处理说明（可选）' : '处理说明'"
-            >
-              <n-input
-                v-model:value="actionForm.comment"
-                type="textarea"
-                :autosize="{ minRows: 3, maxRows: 5 }"
-                placeholder="请输入处理说明"
-              />
-            </n-form-item>
-
-            <n-form-item
-              v-if="['comment', 'reply'].includes(actionForm.action)"
-              :label="actionForm.action === 'reply' ? '回复内容' : '评论内容'"
-            >
-              <n-input
-                v-model:value="actionForm.text"
-                type="textarea"
-                :autosize="{ minRows: 3, maxRows: 6 }"
-                placeholder="请输入文本内容"
-              />
-            </n-form-item>
-
-            <n-form-item v-if="actionForm.action === 'defer'" label="暂缓时长（毫秒）">
-              <n-input-number v-model:value="actionForm.delay_ms" :min="1000" :step="60000" style="width: 100%" />
-            </n-form-item>
-
-            <n-form-item v-if="actionForm.action === 'quick_reply'" label="快捷回复键名">
-              <n-input v-model:value="actionForm.quick_reply_key" placeholder="请输入快捷回复键名" />
-            </n-form-item>
-
-            <n-form-item v-if="actionForm.action === 'merge'" label="目标审核编号">
-              <n-input-number v-model:value="actionForm.target_review_code" :min="1" style="width: 100%" />
-            </n-form-item>
-
-            <n-button type="primary" block :loading="submitting" @click="requestExecute()">
-              执行当前动作
-            </n-button>
-          </n-form>
+          <div class="af">
+            <n-select v-model:value="action" :options="actionOpts" style="width:140px;flex-shrink:0" />
+            <template v-if="needsText">
+              <n-input v-model:value="extra.comment" :placeholder="extHint" style="flex:1" @keyup.enter="doAction()" />
+              <n-input v-if="action==='comment'||action==='reply'" v-model:value="extra.text" placeholder="文本内容" style="flex:1" />
+            </template>
+            <n-input-number v-else-if="needsMs" v-model:value="extra.delay_ms" :min="1000" :step="60000" style="width:160px;flex-shrink:0" />
+            <n-input v-else-if="needsKey" v-model:value="extra.key" placeholder="键名" style="width:160px;flex-shrink:0" />
+            <n-input-number v-else-if="needsCode" v-model:value="extra.target" :min="1" style="width:160px;flex-shrink:0" />
+            <n-button type="primary" :loading="actions.submitting.value" @click="doAction()" style="flex-shrink:0">执行</n-button>
+          </div>
         </section>
 
-        <!-- Info panel -->
-        <n-descriptions
-          bordered column="1" size="small" label-placement="left"
-          :label-style="{ width: isMobile ? '76px' : '96px' }"
-          class="info-panel"
-        >
+        <!-- Info -->
+        <n-descriptions bordered column="1" size="small" label-placement="left" :label-style="{ width: isMobile?'76px':'96px' }" class="ip">
           <n-descriptions-item label="组别">{{ detail.group_id }}</n-descriptions-item>
           <n-descriptions-item label="投稿人">{{ detail.sender_id ?? '未知' }}</n-descriptions-item>
           <n-descriptions-item label="时间">{{ formatTime(detail.created_at_ms) }}</n-descriptions-item>
-          <n-descriptions-item label="文本块">{{ blockStats.textCount }}</n-descriptions-item>
-          <n-descriptions-item label="附件块">{{ blockStats.attachmentCount }}</n-descriptions-item>
-          <n-descriptions-item label="会话 ID">
-            <span class="session-text">{{ detail.session_id }}</span>
-          </n-descriptions-item>
+          <n-descriptions-item label="文本块">{{ blocks.t }} · 附件块 {{ blocks.f }}</n-descriptions-item>
+          <n-descriptions-item label="会话ID"><span class="sid">{{ detail.session_id }}</span></n-descriptions-item>
         </n-descriptions>
 
-        <!-- Render preview -->
-        <div v-if="detail.render_png_blob_id" class="section">
-          <div class="section-head">
-            <span class="section-kicker">渲染预览</span>
-            <h4>预览图</h4>
-          </div>
-          <n-image :src="'/api/blobs/' + detail.render_png_blob_id" class="full-width-image" />
+        <!-- Preview -->
+        <div v-if="detail.render_png_blob_id" class="sec">
+          <div class="sh"><span class="k">渲染预览</span><h4>预览图</h4></div>
+          <n-image :src="'/api/blobs/'+detail.render_png_blob_id" class="fi" />
         </div>
 
-        <!-- Content blocks -->
-        <div class="section">
-          <div class="section-head">
-            <span class="section-kicker">稿件内容</span>
-            <h4>内容块</h4>
-          </div>
-          <div v-for="(block, idx) in detail.blocks" :key="idx" class="block-item">
-            <template v-if="block.kind === 'text'">
-              <div class="text-content">{{ block.text }}</div>
-            </template>
+        <!-- Content -->
+        <div class="sec">
+          <div class="sh"><span class="k">稿件内容</span><h4>内容块</h4></div>
+          <div v-for="(b,i) in detail.blocks" :key="i" class="blk">
+            <div v-if="b.kind==='text'" class="tx">{{ b.text }}</div>
             <template v-else>
-              <div class="media-header">{{ block.media_kind }} · {{ block.reference_type }}</div>
-              <n-image
-                v-if="block.media_kind === 'image'"
-                :src="renderImageUrl(block)"
-                class="full-width-image"
-              />
-              <a v-else :href="renderImageUrl(block)" target="_blank" class="download-link">打开附件</a>
+              <div class="mh">{{ b.media_kind }} · {{ b.reference_type }}</div>
+              <n-image v-if="b.media_kind==='image'" :src="blobUrl(b.reference,b.reference_type)" class="fi" />
+              <a v-else :href="blobUrl(b.reference,b.reference_type)" target="_blank" class="lnk">打开附件</a>
             </template>
           </div>
         </div>
 
-        <!-- Error section -->
-        <div v-if="detail.last_error" class="section error">
-          <div class="section-head">
-            <span class="section-kicker">异常记录</span>
-            <h4>最近错误</h4>
-          </div>
+        <!-- Error -->
+        <div v-if="detail.last_error" class="sec err">
+          <div class="sh"><span class="k">异常记录</span><h4>最近错误</h4></div>
           <pre>{{ detail.last_error }}</pre>
         </div>
       </div>
@@ -378,252 +168,39 @@ async function confirmExecute() {
   </n-drawer>
 
   <!-- Confirm modal -->
-  <n-modal v-model:show="confirmState.show" preset="card" class="confirm-modal" :mask-closable="false">
-    <div class="confirm-head">
-      <span class="confirm-kicker">确认操作</span>
-      <h3>{{ ACTION_LABELS[confirmState.action] }} #{{ props.detail?.review_code ?? props.detail?.external_code ?? '-' }}</h3>
-    </div>
-    <p class="confirm-meta">确认后会立即提交到后端处理。</p>
-    <n-alert type="warning" :bordered="false">请确认当前稿件和操作类型无误。</n-alert>
-    <div class="confirm-actions">
-      <n-button @click="confirmState.show = false">取消</n-button>
-      <n-button type="primary" :loading="submitting" @click="confirmExecute">确认执行</n-button>
+  <n-modal v-model:show="actions.confirmState.show" preset="card" style="max-width:520px" :mask-closable="false">
+    <div><span class="k">确认操作</span><h3 style="margin:8px 0 6px;color:#1e293b">{{ ACTION_LABELS[actions.confirmState.action] }} {{ actions.confirmState.postLabel }}</h3></div>
+    <p v-if="actions.confirmState.groupId" style="color:rgba(30,41,59,0.62);line-height:1.7">分组：{{ actions.confirmState.groupId }} · 投稿人：{{ actions.confirmState.senderId }}</p>
+    <n-alert type="warning" :bordered="false">确认后立即提交到后端处理。</n-alert>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
+      <n-button @click="actions.confirmState.show=false">取消</n-button>
+      <n-button type="primary" :loading="actions.submitting.value" @click="onConfirm">确认执行</n-button>
     </div>
   </n-modal>
 </template>
 
 <style scoped>
-.loading-wrap {
-  display: flex;
-  justify-content: center;
-  padding: 48px;
-}
-
-.detail-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding-bottom: 24px;
-}
-
-.detail-hero,
-.utility-bar,
-.action-panel,
-.info-panel,
-.section {
-  border-radius: 24px;
-  overflow: hidden;
-}
-
-.detail-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 24px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.16), rgba(99, 102, 241, 0.12));
-  border: 1px solid rgba(59, 130, 246, 0.12);
-  color: #1e293b;
-}
-
-.detail-kicker,
-.panel-kicker,
-.section-kicker,
-.confirm-kicker {
-  display: inline-block;
-  margin-bottom: 10px;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(30, 41, 59, 0.46);
-}
-
-.detail-hero h2 {
-  margin: 0;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(34px, 6vw, 50px);
-  line-height: 1;
-  color: #1e293b;
-}
-
-.detail-hero p {
-  margin: 10px 0 0;
-  color: rgba(30, 41, 59, 0.72);
-}
-
-.hero-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.utility-bar {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  box-shadow: var(--app-shadow-soft);
-}
-
-.utility-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.action-panel {
-  padding: 22px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  box-shadow: var(--app-shadow-soft);
-}
-
-.action-panel-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: flex-start;
-}
-
-.action-panel-head h3 {
-  margin: 0;
-  font-size: 22px;
-  line-height: 1.3;
-  color: #1e293b;
-}
-
-.quick-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.action-help {
-  margin: -2px 0 14px;
-  color: rgba(30, 41, 59, 0.62);
-  line-height: 1.7;
-  font-size: 13px;
-}
-
-.advanced-form {
-  display: grid;
-  gap: 2px;
-}
-
-.info-panel {
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  box-shadow: var(--app-shadow-soft);
-}
-
-.section {
-  padding: 22px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  box-shadow: var(--app-shadow-soft);
-}
-
-.section-head {
-  margin-bottom: 14px;
-}
-
-.section-head h4 {
-  margin: 0;
-  font-size: 22px;
-  color: #1e293b;
-}
-
-.full-width-image {
-  width: 100%;
-  display: block;
-}
-
-:deep(.full-width-image img) {
-  width: 100%;
-  height: auto;
-  display: block;
-  border-radius: 18px;
-}
-
-.block-item {
-  background: rgba(30, 41, 59, 0.03);
-  border: 1px solid rgba(30, 41, 59, 0.08);
-  padding: 14px;
-  border-radius: 18px;
-  margin-bottom: 10px;
-  overflow: hidden;
-}
-
-.text-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.8;
-  color: #334155;
-}
-
-.media-header {
-  font-size: 12px;
-  color: rgba(51, 65, 85, 0.52);
-  margin-bottom: 8px;
-  letter-spacing: 0.04em;
-}
-
-.download-link {
-  color: #3b82f6;
-  text-decoration: none;
-}
-
-.section.error pre {
-  color: #dc2626;
-  background: rgba(239, 68, 68, 0.08);
-  padding: 14px;
-  border-radius: 16px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.session-text {
-  word-break: break-all;
-  font-size: 12px;
-  font-family: "Fira Code", "Cascadia Code", monospace;
-}
-
-.confirm-modal {
-  max-width: 520px;
-}
-
-.confirm-head h3 {
-  margin: 8px 0 6px;
-  color: #1e293b;
-}
-
-.confirm-meta {
-  margin: 0 0 14px;
-  color: rgba(30, 41, 59, 0.62);
-  line-height: 1.7;
-}
-
-.confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-@media (max-width: 760px) {
-  .detail-hero,
-  .action-panel-head,
-  .utility-bar {
-    flex-direction: column;
-  }
-
-  .hero-tags,
-  .quick-actions {
-    justify-content: flex-start;
-  }
-}
+.dv { display: flex; flex-direction: column; gap: 18px; padding-bottom: 24px; }
+.hero,.bar,.ap,.ip,.sec { border-radius: 24px; overflow: hidden; }
+.hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 24px; background: linear-gradient(135deg, rgba(59,130,246,0.16), rgba(99,102,241,0.12)); border: 1px solid rgba(59,130,246,0.12); }
+.k { display: inline-block; margin-bottom: 10px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: rgba(30,41,59,.46); }
+.hero h2 { margin: 0; font-family: Georgia,serif; font-size: clamp(34px,6vw,50px); line-height: 1; color: #1e293b; }
+.hero p { margin: 10px 0 0; color: rgba(30,41,59,.72); }
+.tags { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.bar { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; background: rgba(255,255,255,.92); border: 1px solid rgba(148,163,184,.1); box-shadow: var(--app-shadow-soft); }
+.bg { display: flex; flex-wrap: wrap; gap: 8px; }
+.ap { padding: 18px; background: rgba(255,255,255,.96); border: 1px solid rgba(148,163,184,.1); box-shadow: var(--app-shadow-soft); }
+.qb { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.af { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ip { background: rgba(255,255,255,.94); border: 1px solid rgba(148,163,184,.1); box-shadow: var(--app-shadow-soft); }
+.sec { padding: 22px; background: rgba(255,255,255,.94); border: 1px solid rgba(148,163,184,.1); box-shadow: var(--app-shadow-soft); }
+.sh { margin-bottom: 14px; } .sh h4 { margin: 0; font-size: 22px; color: #1e293b; }
+.fi { width: 100%; display: block; } :deep(.fi img) { width: 100%; height: auto; display: block; border-radius: 18px; }
+.blk { background: rgba(30,41,59,.03); border: 1px solid rgba(30,41,59,.08); padding: 14px; border-radius: 18px; margin-bottom: 10px; overflow: hidden; }
+.tx { white-space: pre-wrap; word-break: break-word; line-height: 1.8; color: #334155; }
+.mh { font-size: 12px; color: rgba(51,65,85,.52); margin-bottom: 8px; }
+.lnk { color: #3b82f6; text-decoration: none; }
+.err pre { color: #dc2626; background: rgba(239,68,68,.08); padding: 14px; border-radius: 16px; white-space: pre-wrap; word-break: break-all; }
+.sid { word-break: break-all; font-size: 12px; font-family: monospace; }
+@media (max-width:760px) { .hero,.qb,.bar { flex-direction: column; } .tags { justify-content: flex-start; } }
 </style>

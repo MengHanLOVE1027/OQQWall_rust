@@ -1763,14 +1763,14 @@ fn draw_watermark_layer(
     let angle = -24f32;
     let font_size = 40u32;
     let font_weight = 400u32;
-    let tile = 480f32;
+    let tile = 320f32;
     let jitter = 10f32;
     let color = Color4f::new(0.0, 0.0, 0.0, opacity);
 
     let mut rng = DeterministicRng::new(watermark_seed(header, text));
     let cols = ((width as f32) / tile).ceil().max(1.0) as i32 + 1;
     let rows = ((height as f32) / tile).ceil().max(1.0) as i32 + 1;
-    let first_cx = width as f32 * 0.5 - ((cols - 1) as f32 * tile) * 0.5 + 240.0;
+    let first_cx = width as f32 * 0.5 - ((cols - 1) as f32 * tile) * 0.5 + 120.0;
     let first_cy = height as f32 * 0.5 - ((rows - 1) as f32 * tile) * 0.5;
 
     for row in 0..rows {

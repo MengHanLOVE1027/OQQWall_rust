@@ -217,7 +217,6 @@ struct NapCatState {
 #[derive(Debug, Clone)]
 struct BufferedMessage {
     message: serde_json::Value,
-    received_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -2517,36 +2516,49 @@ async fn parse_inbound_event(
                         send_private_text(out_tx, &user_id, "没有可提交的内容。").await;
                         return None;
                     }
+                    // Combine all buffered messages into a single IngressCommand
+                    let first_msg_id = value_opt_to_string(session.messages[0].message.get("message_id"))
+                        .unwrap_or_else(|| "0".to_string());
+                    let sender_name = Some(
+                        extract_sender_name(&session.messages[0].message)
+                            .unwrap_or_else(|| user_id.clone())
+                    );
+                    let mut combined_text = String::new();
+                    let mut combined_attachments = Vec::new();
                     let chat_id = format!("{}_session_{}", user_id, session.started_at_ms);
-                    let mut commands = Vec::new();
                     for buffered in &session.messages {
-                        let msg_value = &buffered.message;
-                        let msg_id = value_opt_to_string(msg_value.get("message_id"))
-                            .unwrap_or_else(|| "0".to_string());
-                        let sender_name = extract_sender_name(msg_value);
                         let ExtractedMessage { text, summary_text: _, attachments } =
-                            extract_message_lite(msg_value.get("message"));
-                        commands.push(Command::Ingress(IngressCommand {
-                            profile_id: self_id.clone(),
-                            chat_id: chat_id.clone(),
-                            user_id: user_id.clone(),
-                            sender_name,
-                            group_id: session.group_id.clone(),
-                            platform_msg_id: msg_id,
-                            message: IngressMessage { text, attachments },
-                            received_at_ms: buffered.received_at_ms,
-                        }));
+                            extract_message_lite(buffered.message.get("message"));
+                        if !text.trim().is_empty() {
+                            if !combined_text.is_empty() {
+                                combined_text.push('\n');
+                            }
+                            combined_text.push_str(&text);
+                        }
+                        combined_attachments.extend(attachments);
                     }
                     let count = session.messages.len();
+                    let group_id = session.group_id.clone();
+                    let started_at_ms = session.started_at_ms;
                     guard.submission_sessions.remove(&user_id);
-                    // Return first command, queue the rest
-                    let first = commands.remove(0);
-                    guard.pending_commands.extend(commands);
                     drop(guard);
                     send_private_text(out_tx, &user_id,
                         &format!("投稿已提交，共 {} 条消息，请等待审核。", count)
                     ).await;
-                    return Some(first);
+                    return Some(Command::Ingress(IngressCommand {
+                        profile_id: self_id,
+                        chat_id,
+                        user_id: user_id.clone(),
+                        sender_name,
+                        group_id,
+                        platform_msg_id: first_msg_id,
+                        message: IngressMessage {
+                            text: combined_text,
+                            attachments: combined_attachments,
+                        },
+                        received_at_ms: started_at_ms,
+                        close_immediately: true,
+                    }));
                 }
                 if raw_trimmed == "#追加" {
                     session.confirming = false;
@@ -2562,7 +2574,6 @@ async fn parse_inbound_event(
                 // Buffer message
                 session.messages.push(BufferedMessage {
                     message: value.clone(),
-                    received_at_ms: timestamp_ms,
                 });
                 let count = session.messages.len();
                 drop(guard);
@@ -2628,6 +2639,7 @@ async fn parse_inbound_event(
             platform_msg_id: message_id,
             message: IngressMessage { text, attachments },
             received_at_ms: timestamp_ms,
+            close_immediately: false,
         }));
     }
 

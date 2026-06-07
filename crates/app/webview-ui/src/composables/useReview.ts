@@ -9,7 +9,7 @@ export function useReview() {
   const detailLoading = ref(false)
   const actionLoading = ref(false)
 
-  const stage = ref<Stage | ''>('review_pending')
+  const stage = ref<Stage | ''>('')
   const keyword = ref('')
   const posts = ref<PostItem[]>([])
   const page = ref(0)
