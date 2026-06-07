@@ -2630,6 +2630,9 @@ async fn parse_inbound_event(
             }
             guard.pending_summary.insert(ingress_id, summary_text);
         }
+        let sender_name = Some(
+            sender_name.unwrap_or_else(|| user_id.clone())
+        );
         return Some(Command::Ingress(IngressCommand {
             profile_id: self_id,
             chat_id: user_id.clone(),

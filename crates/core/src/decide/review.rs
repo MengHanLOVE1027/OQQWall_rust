@@ -59,7 +59,10 @@ pub fn decide_review_action(
             if let Some(event) = maybe_assign_external_code(state, &group_id, post_id) {
                 events.push(event);
             }
-            if state.send_plans.contains_key(&post_id) {
+            // Cancel send plan (if scheduled) OR trigger QQ Space recall (if published)
+            if state.send_plans.contains_key(&post_id)
+                || state.external_code_by_post.contains_key(&post_id)
+            {
                 events.push(Event::Schedule(ScheduleEvent::SendPlanCanceled { post_id }));
             }
             events
